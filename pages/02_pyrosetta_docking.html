@@ -1,0 +1,158 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>⚛️ PyRosetta 도킹 (실측 ΔG) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html" class="active">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="pyrosetta-g">기능 분석 보고서 — PyRosetta 도킹 엔진 (실측 ΔG)</h1>
+<p>분석 루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+대상 파일:
+- <code>AG_src/scripts/flexpep_dock.py</code> (실측 도킹·채점 핵심)
+- <code>pyrosetta_flow/docking_executor.py</code> (subprocess 실행 레이어)
+- <code>pyrosetta_flow/scoring_pipeline.py</code> (대안 스코어링 체인)
+- <code>pyrosetta_flow/runner.py</code> (도킹 오케스트레이션·호출부)
+- <code>pyrosetta_flow/schema.py</code> (FlowConfig 기본값)</p>
+<p>작성 원칙: 모든 주장은 <code>file_path:line</code> 인용. 미확인 항목은 "미검증" 명시. 읽기전용 분석.</p>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="a">(a) 전체 호출 경로</h3>
+<p>도킹은 별도 conda 환경(<code>bio-tools</code>)의 standalone 스크립트를 subprocess로 호출하는 구조다.</p>
+<ul>
+<li><code>runner.py:299</code> 에서 도킹 스크립트 경로를 <code>AG_src/scripts/flexpep_dock.py</code> 로 고정.</li>
+<li>subprocess 실행은 <code>docking_executor.py:_run_script</code> (<code>docking_executor.py:38-75</code>) 가 담당하며, <code>runner.py:195</code> 에서 re-export 하여 하위호환을 유지한다.</li>
+<li>conda Python 경로 해석은 <code>_resolve_conda_python</code> (<code>docking_executor.py:18-35</code>): <code>~/miniforge3|miniconda3|anaconda3/envs/&lt;env&gt;/bin/python</code> 직접 경로 → 없으면 <code>conda run -n &lt;env&gt;</code> → 그래도 없으면 <code>sys.executable</code> 폴백 (<code>docking_executor.py:45-51</code>).</li>
+<li>스크립트의 stdout 마지막 줄만 JSON 으로 파싱한다 (<code>docking_executor.py:65-75</code>). 모든 PyRosetta 로그는 stderr 로 분리 (<code>flexpep_dock.py:18-20</code>, <code>init_pyrosetta</code> 의 <code>-mute all</code> <code>flexpep_dock.py:38-45</code>).</li>
+</ul>
+<h3 id="b-flexpepdock-refine">(b) FlexPepDock refine</h3>
+<ul>
+<li>PyRosetta 초기화 옵션: <code>-mute all -ex1 -ex2aro -ignore_unrecognized_res -flexPepDocking:pep_refine -constraints:cst_fa_weight 1.0</code> (<code>flexpep_dock.py:38-45</code>).</li>
+<li>변이체 입력은 <strong>MutateResidue 방식</strong>을 선호한다 (<code>flexpep_dock.py:52-151</code>): 레퍼런스 복합체(AlphaFold3 등)의 백본을 보존하고 side-chain만 target 서열로 치환. <code>runner.py:740-741</code> 에서 <code>--reference-complex &lt;template&gt; --target-sequence &lt;mutant&gt;</code> 인자로 전달.</li>
+<li>펩타이드 체인 자동 선택: 요청 체인이 없거나 길이가 target과 크게 다르면 길이 근접 체인으로 자동 전환 (<code>flexpep_dock.py:96-114</code>).</li>
+<li>서열 차이 위치만 1→3letter 코드(<code>_AA1TO3</code> <code>flexpep_dock.py:75-80</code>)로 변이 적용 (<code>flexpep_dock.py:136-150</code>).</li>
+<li>체인 재정렬: FlexPepDockingProtocol은 펩타이드가 <strong>마지막 체인</strong>일 것을 요구하므로, PDB 텍스트를 dump→체인 블록 재배치→reload 한다 (<code>reorder_peptide_last</code> <code>flexpep_dock.py:158-236</code>). PyRosetta 버전 호환성을 위해 객체 조작 대신 텍스트 조작을 택했다고 명시 (<code>flexpep_dock.py:162-165</code>).</li>
+<li>이황화결합 처리: 펩타이드(마지막 체인)에서 Cys 잔기 탐색(<code>_find_peptide_cys_residues</code> <code>flexpep_dock.py:243-250</code>). Cys가 정확히 2개면 <code>conformation().detect_disulfides()</code> 를 우선 사용하고, 실패 시 수동 <code>AtomPairConstraint</code>(SG-SG harmonic 2.05 Å, sd 0.3) 폴백 (<code>flexpep_dock.py:313-333</code>, <code>_add_disulfide_constraint</code> <code>flexpep_dock.py:253-272</code>). refine 후 SG-SG 거리(&lt;3.0 Å면 INTACT)를 검사해 결과에 포함 (<code>_check_disulfide_distance</code> <code>flexpep_dock.py:275-290</code>, <code>flexpep_dock.py:338-341</code>).</li>
+<li>수동 constraint를 PDB 재정렬 직후 적용하면 AtomID 손상으로 segfault가 났던 이력이 주석에 기록됨 (<code>flexpep_dock.py:310-312</code>). 이 때문에 detect_disulfides 우선.</li>
+<li>실제 refine 실행: <code>FlexPepDockingProtocol().apply(pose)</code> (<code>flexpep_dock.py:335-336</code>). ab-initio 변형은 <code>set_lowres_preoptimize(True)</code> 추가 (<code>flexpep_dock.py:369-371</code>).</li>
+</ul>
+<h3 id="c-interfaceanalyzer-ddg">(c) InterfaceAnalyzer ddG</h3>
+<ul>
+<li><code>compute_interface_ddg</code> (<code>flexpep_dock.py:394-406</code>): <code>InterfaceAnalyzerMover(1)</code> (jump_id=1로 수용체 체인 A ↔ 펩타이드 체인 B 분리), <code>set_pack_input(True)</code>, <code>set_pack_separated(True)</code>, <code>apply</code> 후 <code>get_interface_dG()</code> 반환. 더 음수일수록 강한 결합.</li>
+<li>총 에너지: <code>compute_total_score</code> = <code>get_fa_scorefxn()(pose)</code> (<code>flexpep_dock.py:409-413</code>).</li>
+<li>결과 JSON: <code>ddg</code>, <code>total_score</code>, <code>pre_score</code>, <code>score_delta</code>, <code>clash_score</code>, <code>constraint_violations</code>(현재 항상 0, <code>flexpep_dock.py:551</code>), 그리고 Cys 2개일 때 <code>disulfide_intact</code>/<code>sg_sg_distance</code> (<code>flexpep_dock.py:545-558</code>).</li>
+</ul>
+<h3 id="d-clash-peptide-only">(d) clash 계산 (peptide-only)</h3>
+<ul>
+<li><code>compute_clash_score</code> (<code>flexpep_dock.py:416-446</code>): fa_scorefxn 적용 후, <strong>마지막 체인(펩타이드)</strong> 잔기만 순회하며 잔기별 <code>fa_rep &gt; 10.0 REU</code> 개수를 센다 (<code>flexpep_dock.py:441-446</code>).</li>
+<li>펩타이드 체인 범위는 <code>chain_begin/chain_end(n_chains)</code> 로 한정 (<code>flexpep_dock.py:435-439</code>). 단일 체인이면 전체 폴백.</li>
+<li>주석(<code>flexpep_dock.py:422-426</code>)에 버그 수정 이력 기록: 이전 구현이 전체 pose(수용체+펩타이드 ~486잔기)를 세어 native·변이체 모두 clash≈50 으로 QC 게이트(≤10) 전원 탈락했던 문제를, 펩타이드 잔기만 세도록 수정함.</li>
+</ul>
+<h3 id="e">(e) 대안 스코어링 체인 (보조)</h3>
+<p><code>scoring_pipeline.py:_apply_alternative_scoring</code> (<code>scoring_pipeline.py:42-281</code>)은 FlexPepDock ddG에 부가 점수를 적층한다. 각 단계는 독립적으로 graceful skip:
+- Step 0: cheap objectives(반감기/ADMET surrogate, 서열 기반) <code>scoring_pipeline.py:79-95</code>.
+- Step 0.5: pepADMET GNN 독성 추론(별도 env 배치 subprocess) → admet 페널티. 미설치/실패 시 skip, 즉 <strong>가짜 안전 판정을 만들지 않음(fail-closed)</strong> <code>scoring_pipeline.py:99-120</code>.
+- Step 1: GNINA rescore (binary 없으면 dry-run) <code>scoring_pipeline.py:123-157</code>.
+- Step 2: ECR consensus(GNINA+ddG 통합) <code>scoring_pipeline.py:159-189</code>.
+- Step 3: Pareto/NSGA-II 순위(pymoo) <code>scoring_pipeline.py:201-243</code>.
+- Step 4: BO 추천(부수효과 없음, 로그만) <code>scoring_pipeline.py:249-279</code>.</p>
+<p>이 모듈은 ddG 자체를 만들지 않는다 — FlexPepDock 결과(ddG·clash)를 입력으로 받아 순위만 보강한다.</p>
+<hr />
+<h2 id="2-vs-mock-fail-closed-999">② 영향 (실측 vs mock, fail-closed 999)</h2>
+<h3 id="g-mock">실측 ΔG — mock 경로 없음</h3>
+<ul>
+<li><code>flexpep_dock.py</code> 전체에 mock/fake/placeholder/stub 도킹 경로는 <strong>없다</strong>(grep으로 미발견). PyRosetta가 import되지 않으면 스크립트 자체가 예외로 실패한다 (<code>init_pyrosetta</code> <code>flexpep_dock.py:35-45</code>, 각 함수의 지연 import).</li>
+<li>따라서 stdout JSON의 <code>ddg</code>는 항상 실제 <code>InterfaceAnalyzerMover.get_interface_dG()</code> 값이다 (<code>flexpep_dock.py:406, 539</code>). 실데이터 증거: <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code> 에 <code>ddg: -32.1162</code> 등 실측값 다수 기록.</li>
+<li>"mock"이라는 용어는 보조 GNINA 단계의 dry-run 폴백에만 존재(<code>scoring_pipeline.py:7,54,123,147-148</code>)하며, 이는 ddG가 아니라 부가 CNN 점수의 부재를 honest하게 표기하는 용도다.</li>
+</ul>
+<h3 id="fail-closed-999">fail-closed 999 규약</h3>
+<p>도킹 실패 시 가짜 좋은 점수 대신 999(=명백히 탈락)로 처리하는 것이 일관된 규약이다.
+- 사전 게이트(예: FWKT pharmacophore) 실패 후보: <code>_dock_one</code> 진입 시 <code>fail_reason</code>이 있으면 도킹을 건너뛰고 <code>ddg=999.0, total_score=999.0, clash_score=999.0</code> 반환 (<code>runner.py:721-732</code>).
+- subprocess 예외(타임아웃·크래시·JSON 파싱 실패 등): except 블록에서 동일하게 999로 마킹 (<code>runner.py:757-767</code>). <code>_run_script</code>가 returncode≠0/타임아웃/JSON 파싱 실패를 RuntimeError로 올린다 (<code>docking_executor.py:57-75</code>).
+- baseline 도킹 실패: <code>trial_result.get("ddg", 999.0)</code> (<code>runner.py:385</code>).
+- validation 트라이얼 실패: <code>return 999.0</code> (<code>runner.py:1342-1344</code>), 이후 <code>ddg &lt; 900</code> / <code>ddg &lt;= 0</code> 필터로 catastrophic 실패 제거 (<code>runner.py:1362, 1371, 1379</code>).
+- 하류 소비: PASS 판정은 <code>c.ddg &lt;= ddg_threshold and c.ddg &lt; 900</code> (<code>runner.py:282</code>), Pareto 입력·BO 관측도 <code>ddg &lt; 900</code> 유효성 필터 적용(<code>scoring_pipeline.py:252</code>, <code>runner.py:251-253</code>). 즉 999는 순위/통계에서 자동 배제된다.</p>
+<p>영향 요약: 도킹이 죽으면 결과가 사라지는 게 아니라 "확실히 나쁜 후보"로 표식되어 자연 도태된다 → 환각성 좋은 점수가 leaderboard에 침투할 수 없는 구조.</p>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<ul>
+<li>코드 주석에 직접 기록된 결함/수정 이력(사실상의 Action Item closure):</li>
+<li>clash 전체-pose 집계 버그 수정(peptide-only로 전환) — <code>flexpep_dock.py:422-426</code>. (사용자 메모리 <code>sstr2-clash-gate-issue [FIXED]</code>와 일치.)</li>
+<li>이황화 수동 constraint segfault → detect_disulfides 우선 전환 — <code>flexpep_dock.py:310-312</code>.</li>
+<li>C3(무한 hang 방지) timeout 도입 — <code>docking_executor.py:55-58</code>. script_timeout 300→600 상향(refine ~4min/후보) — <code>schema.py:35</code>.</li>
+<li>C4(malformed stdout 방어) JSON 파싱 try/except — <code>docking_executor.py:68-75</code>.</li>
+<li>P1 분해: god-object runner에서 도킹 subprocess 레이어를 <code>docking_executor.py</code>로 추출 — <code>runner.py:193-195</code>, <code>docking_executor.py:3</code>.</li>
+<li>미확인(미검증): 별도의 구조화된 Action Item 레지스트리(예: <code>_workspace/release/</code>의 R1~R7, VR-cycle 목록)는 본 분석 grep 범위에서 발견하지 못함 → 본 엔진과의 1:1 매핑은 미검증. (CLAUDE.md Stage 이력에 R1~R7/VR-cycle-10~14 언급은 있으나 본 도킹 파일들과의 직접 연결 코드는 확인 못 함.)</li>
+</ul>
+<hr />
+<h2 id="4">④ 완성도</h2>
+<p><strong>완성도: 약 90%</strong></p>
+<p>근거:
+- 실측 ΔG 파이프라인 완비: MutateResidue→체인 재정렬→이황화 처리→FlexPepDock refine→InterfaceAnalyzer ddG→peptide-only clash 전 과정이 구현·연결됨 (<code>flexpep_dock.py:453-558</code>).
+- 운영 견고성 확보: timeout(<code>docking_executor.py:55-58</code>), JSON 파싱 방어(<code>docking_executor.py:68-75</code>), fail-closed 999(<code>runner.py:721-767</code>), 병렬 실행(<code>runner.py:769-772</code>), best-of-N baseline(<code>runner.py:371-392</code>), 멀티-트라이얼 검증+CV 조기종료(<code>runner.py:1308-1395</code>), baseline 캐시(<code>runner.py:344-408</code>) 등.
+- 실제 산출물 존재: leaderboard에 실측 ddg/margin/hc50 539+ 후보 기록.</p>
+<p>감점 요인:
+- <code>constraint_violations</code> 가 항상 0 하드코딩 — 이황화/거리 위반을 점수에 반영하지 않음 (<code>flexpep_dock.py:551</code>). disulfide는 INTACT 플래그만 보고하고 게이트화 여부는 본 파일에서 미확인.
+- <code>ab-initio</code> 경로는 detect_disulfides 우선 적용이 아니라 수동 constraint만 사용 (<code>flexpep_dock.py:366-367</code>) — refine 경로의 segfault 회피 패턴이 ab-initio엔 미적용(잠재 리스크, 미검증).
+- ddG 절대값의 실험 친화도 대비 검증(calibration) 코드는 본 파일군에 없음 → 순위용 지표로만 신뢰 가능, 절대 친화도 주장 불가.</p>
+<hr />
+<h2 id="5">⑤ 학술 가치</h2>
+<p><strong>중~상 (상에 근접)</strong></p>
+<p>근거:
+- 상 요소: 표준 FlexPepDock refine + InterfaceAnalyzer ddG는 펩타이드-수용체 결합 평가에서 학계 통용 프로토콜이며, MutateResidue 기반 백본 보존 변이(<code>flexpep_dock.py:52-151</code>)는 변이체 ΔΔG 비교에 방법론적으로 타당. 멀티-트라이얼+CV 조기종료(<code>runner.py:1366-1376</code>)와 top-3 mean 채택(<code>runner.py:1382, 1395</code>)은 PyRosetta 확률적 출력의 재현성 문제를 정직하게 다룬다.
+- 중으로 끌어내리는 요소: ddG 절대값 calibration 부재, <code>constraint_violations</code> 미반영, disulfide 게이트 강제 여부 미확인. 단일 receptor 구조(template) 의존 — ensemble/induced-fit 정도는 본 파일에서 미검증.
+- 정직성(높은 학술 가치): mock 없음 + fail-closed 999 + GNINA dry-run 명시 표기 → "계산 불가능을 계산 가능한 척하지 않는다" 원칙이 코드에 구현됨. 이는 결과 신뢰성 주장에 유리.</p>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<h3 id="conda-bio-tools-subprocess">conda bio-tools subprocess 직접 호출</h3>
+<p>스크립트 헤더(<code>flexpep_dock.py:8-17</code>) 기준:</p>
+<pre><code># 직접 복합체 입력
+conda run -n bio-tools python AG_src/scripts/flexpep_dock.py \
+    --input complex.pdb --output refined.pdb --protocol flexpep_refine
+
+# 레퍼런스+변이 (변이체 권장)
+conda run -n bio-tools python AG_src/scripts/flexpep_dock.py \
+    --input complex.pdb --output refined.pdb --protocol flexpep_refine \
+    --reference-complex ref.pdb --target-sequence SGCKNFFWKTFTCA --peptide-chain 1
+</code></pre>
+<ul>
+<li>인자: <code>--input</code>(필수), <code>--output</code>(필수), <code>--protocol</code>(flexpep_refine|flexpep_abinitio), <code>--reference-complex</code>, <code>--target-sequence</code>, <code>--peptide-chain</code>(기본 1) — <code>flexpep_dock.py:457-477</code>.</li>
+<li>conda env 기본값 <code>bio-tools</code> (<code>schema.py:21</code>). <code>_resolve_conda_python</code> 가 miniforge3/miniconda3/anaconda3 envs 경로를 자동 탐색 (<code>docking_executor.py:26-33</code>).</li>
+<li>출력은 stdout 마지막 줄 JSON, 로그는 stderr (<code>flexpep_dock.py:18-20</code>).</li>
+</ul>
+<h3 id="max_workers">파이프라인을 통한 병렬 호출 (max_workers)</h3>
+<ul>
+<li>iteration 내 후보 도킹은 <code>ThreadPoolExecutor(max_workers=...)</code> 로 병렬 (<code>runner.py:769-772</code>).</li>
+<li><code>max_workers = min(n_jobs, config.max_parallel_workers, os.cpu_count() or 4)</code> (<code>runner.py:699</code>). 기본 <code>max_parallel_workers=32</code> (<code>schema.py:31</code>).</li>
+<li>validation 트라이얼은 별도 풀 <code>min(remaining_trials, config.validation_max_workers, cpu_count)</code> (<code>runner.py:1347</code>), 기본 <code>validation_max_workers=4</code> (<code>schema.py:43</code>).</li>
+<li>subprocess 타임아웃 <code>script_timeout=600s</code> (<code>schema.py:35</code>). 각 후보는 독립 subprocess라 GIL 영향 없음(실제 연산은 PyRosetta C++).</li>
+<li>baseline은 <code>n_baseline_trials=3</code> best-of-N (<code>schema.py:36</code>, <code>runner.py:371-392</code>), <code>reuse_baseline=True</code> 시 epoch 간 캐시 재사용 (<code>runner.py:344-408</code>, <code>schema.py:54</code>).</li>
+</ul>
+<h3 id="off-target">off-target 선택성 (관련 모듈)</h3>
+<ul>
+<li>선택성 도킹은 <code>AG_src/scripts/offtarget_dock.py</code> 가 SSTR1/3/4/5에 동일 FlexPepDock+InterfaceAnalyzer 적용 (<code>offtarget_dock.py:5-11</code>). 비용 큼 → <code>enable_selectivity=False</code> 기본 (<code>schema.py:45-51</code>).</li>
+</ul>
+<hr />
+<h2 id="7">⑦ 무관 시 필요 이유</h2>
+<p>본 엔진은 프로젝트 핵심과 직접 관련되어 "무관"에 해당하지 않는다. 근거: 프로젝트 목표가 SSTR2 표적 방사성의약품 후보의 결합 강도(ΔG) 기반 스크리닝(CLAUDE.md 프로젝트 컨텍스트)이며, 본 엔진이 그 ΔG를 산출하는 유일한 실측 채점원이다. leaderboard의 <code>ddg</code>/<code>margin</code>/<code>delta_margin</code>(<code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code>)이 모두 이 엔진 출력에 의존한다.</p>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<ul>
+<li><code>pyrosetta_flow/docking_executor.py:18-35</code> — conda Python 경로 해석</li>
+<li><code>pyrosetta_flow/docking_executor.py:38-75</code> — subprocess 실행/timeout/JSON 파싱 방어</li>
+<li><code>pyrosetta_flow/scoring_pipeline.py:42-281</code> — 대안 스코어링 체인(graceful skip, ddg&lt;900 필터)</li>
+<li><code>pyrosetta_flow/scoring_pipeline.py:99-120</code> — pepADMET fail-closed(가짜 안전판정 금지)</li>
+<li><code>AG_src/scripts/flexpep_dock.py:35-45</code> — PyRosetta init 옵션</li>
+<li><code>AG_src/scripts/flexpep_dock.py:52-151</code> — MutateResidue 변이체 준비</li>
+<li><code>AG_src/scripts/flexpep_dock.py:158-236</code> — 펩타이드 마지막 체인 재정렬</li>
+<li><code>AG_src/scripts/flexpep_dock.py:243-341</code> — 이황화 탐지/constraint/거리 검사</li>
+<li><code>AG_src/scripts/flexpep_dock.py:394-406</code> — InterfaceAnalyzer ddG</li>
+<li><code>AG_src/scripts/flexpep_dock.py:416-446</code> — peptide-only clash 계산</li>
+<li><code>AG_src/scripts/flexpep_dock.py:545-558</code> — 결과 JSON 스키마(constraint_violations=0 하드코딩)</li>
+<li><code>pyrosetta_flow/runner.py:299</code> — flexpep_dock.py 경로 고정</li>
+<li><code>pyrosetta_flow/runner.py:371-408</code> — baseline best-of-N + 캐시</li>
+<li><code>pyrosetta_flow/runner.py:716-772</code> — _dock_one + ThreadPool 병렬, fail-closed 999</li>
+<li><code>pyrosetta_flow/runner.py:1308-1395</code> — 멀티-트라이얼 검증 + CV 조기종료</li>
+<li><code>pyrosetta_flow/schema.py:21,31,35,36,43,54</code> — conda_env/max_workers/timeout/baseline 기본값</li>
+<li><code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code> — 실측 ddg 값 존재 증거</li>
+</ul>
+<p>미검증 항목: ① 구조화된 Action Item 레지스트리와 본 엔진의 1:1 매핑 ② disulfide INTACT 플래그의 게이트 강제 여부 ③ ab-initio 경로 segfault 회피 적용 ④ ddG 절대값 실험 calibration.</p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

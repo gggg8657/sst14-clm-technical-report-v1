@@ -1,0 +1,199 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🧬 변이 엔진 & Scaffold 가드 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html" class="active">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="scaffold">변이 생성 엔진 + Scaffold 가드 — 기능 분석 보고서</h1>
+<blockquote>
+<p><strong>검증 원칙</strong>: 본 보고서의 모든 동작·정량 주장은 <code>file_path:line</code> 인용으로 검증한다. 코드에서 확인되지 않은 내용은 "미검증"으로 명시한다. 수치는 코드에 명시된 값만 인용한다.</p>
+<p><strong>분석 루트</strong>: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+<strong>대상 파일</strong>: <code>pyrosetta_flow/runner.py</code>, <code>pyrosetta_flow/schema.py</code>, <code>pyrosetta_flow/adapter.py</code>(변이 생성기), <code>AG_src/llm/prompts.py</code></p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="1-_mutable_design_positions">(1) 변이 위치 선택 — <code>_mutable_design_positions</code></h3>
+<p>변이 가능 위치는 <code>config.design_positions</code> 에서 <strong>약리단(FWKT, 7-10)</strong> 과 <strong>Cys 위치(이황화)</strong> 를 제외하여 산출한다.</p>
+<ul>
+<li><code>design_positions</code> 기본값: <code>[1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12]</code> — <code>pyrosetta_flow/schema.py:14-18</code>
+  (주석: 실제 변이 가능 = <code>[1,2,4,5,6,11,12]</code> — Cys3/14·FWKT 제외, <code>schema.py:15-16</code>)</li>
+<li>약리단 위치 상수: <code>PHARMACOPHORE_POSITIONS_1IDX = (7, 8, 9, 10)</code> — <code>runner.py:102</code></li>
+<li>Cys 위치 추출: <code>_disulfide_cys_positions</code> 가 참조 서열에서 <code>C</code> 인 위치(1-indexed)를 모두 반환 — <code>runner.py:114-116</code></li>
+<li>최종 필터: <code>mutable_positions = [pos for pos in config.design_positions if pos not in PHARMACOPHORE_POSITIONS_1IDX and pos not in cys]</code> — <code>runner.py:135-138</code></li>
+<li><strong>안전 폴백</strong>: 필터 결과가 비면 <code>config.design_positions</code> 전체를 그대로 반환 (<code>mutable_positions or list(config.design_positions)</code>) — <code>runner.py:139</code>
+  → 미검증 우려: 이 폴백이 발동하면 FWKT/Cys 가 변이 후보에 다시 포함될 수 있으나, 후술하는 <code>_preserves_scaffold</code> 게이트가 후단에서 그런 제안을 거부하므로 실제 통과는 차단됨(아래 (3) 참조).</li>
+</ul>
+<p>이 함수의 산출물은 변이 루프 진입 직전 한 번 호출되어 <code>mutation_positions</code> 로 사용된다 — <code>runner.py:596</code>.</p>
+<h3 id="2-fwkt-7-10-cys3cys14">(2) 약리단(FWKT 7-10) · Cys3/Cys14 보존 메커니즘</h3>
+<p>세 단계로 작동한다.</p>
+<ol>
+<li><strong>위치 선택 단계 제외</strong> (사전 차단): 위 (1)에서 FWKT·Cys 를 변이 후보에서 제거 — <code>runner.py:132-139</code>.</li>
+<li><strong>생성기 자체 제약</strong>: 실제 변이 아미노산 풀에서 Cys 를 배제.
+   - <code>AA_NO_CYS = list("ADEFGHIKLMNPQRSTVWY")</code> (19종, Cys 없음) — <code>adapter.py:10</code>
+   - <code>generate_random_mutant</code> 가 이 풀에서만 치환 — <code>adapter.py:53-54</code>
+   - <code>generate_guided_mutant</code> 도 추천 풀에서 <code>C</code> 를 명시 배제(<code>aa != "C"</code>) — <code>adapter.py:91</code>, 폴백 풀도 <code>AA_NO_CYS</code> — <code>adapter.py:96</code>
+   → 즉 변이로 인해 <strong>새로운 Cys 가 도입되지 않는다</strong>. (단, 기존 Cys 가 다른 AA 로 바뀌는 것은 생성기만으로는 못 막음 — 그래서 (3) 게이트가 필요.)</li>
+<li><strong>사후 게이트</strong> (거부): 생성된 후보가 약리단·이황화를 보존하는지 검증 — 아래 (3).</li>
+</ol>
+<p>약리단 보존 판정:
+- <code>_pharmacophore_slice(seq) = seq[6:10]</code> (7-10 위치 슬라이스) — <code>runner.py:106-107</code>
+- <code>_preserves_pharmacophore</code> 는 후보와 참조의 7-10 슬라이스가 <strong>완전 동일</strong>할 때만 True — <code>runner.py:110-111</code></p>
+<p>이황화 보존 판정:
+- <code>_preserves_disulfide</code>: 참조 서열의 <strong>모든 Cys 위치가 후보에서도 <code>C</code></strong> 여야 True — <code>runner.py:119-123</code>
+- 결합 게이트 <code>_preserves_scaffold</code> = 약리단 보존 AND 이황화 보존 — <code>runner.py:126-129</code></p>
+<h3 id="3">(3) 거부 로직 (변이 생성 루프)</h3>
+<p>후보 1개 생성에 대해 <strong>약리단 재시도 외층 + dedup 내층</strong>의 이중 루프 구조 — <code>runner.py:597-687</code>.</p>
+<ul>
+<li>약리단 재시도 한도: <code>PHARMACOPHORE_RETRY_LIMIT = 3</code> → 외층은 <code>range(PHARMACOPHORE_RETRY_LIMIT + 1)</code> = 4회 — <code>runner.py:103</code>, <code>runner.py:601</code></li>
+<li>dedup 내층: <code>range(config.max_dedup_trials)</code> (기본 <code>max_dedup_trials = 50</code>) — <code>runner.py:603</code>, <code>schema.py:40</code></li>
+<li>변이 수 escalation: 내층 trial 이 진행될수록 강제 변이 수를 1→2→<code>max_random_mutations</code>→<code>max_random_mutations+1</code> 로 상향 (<code>max_random_mutations</code> 기본 3) — <code>runner.py:605-611</code>, <code>schema.py:41</code></li>
+<li>거부 분기:</li>
+<li>원본과 동일하거나 이미 본 서열 → <code>continue</code> (재시도) — <code>runner.py:640-641</code></li>
+<li><strong>scaffold 미보존 → <code>break</code></strong> (해당 dedup 내층 즉시 탈출) — <code>runner.py:642-643</code></li>
+<li>통과 시 <code>mutant</code> 확정 + <code>seen_sequences</code> 등록 — <code>runner.py:644-646</code></li>
+<li>폴백 경로: 내층에서 mutant 미확정 시, 마지막 제안이 scaffold 위반이면 외층 <code>continue</code>; 아니면 변이 수를 <code>max(2, len//2)</code> 로 강제한 추가 random 후보를 만들어 scaffold·dedup·non-native 통과 시 채택 — <code>runner.py:649-672</code></li>
+<li><strong>최종 실패 처리</strong>: 4회 외층을 모두 소진해도 mutant 가 없으면 <code>fail_reason = "FWKT pharmacophore gate failed after 3 retries"</code> 로 표시하고 마지막 제안을 mutant 로 둠 — <code>runner.py:674-679</code>. 이 후보는 도킹 단계에서 <code>ddg=999.0</code> 등으로 즉시 실패 처리 — <code>runner.py:721-732</code>.</li>
+</ul>
+<p><code>seen_sequences</code> 초기값은 <code>{config.original_sequence}</code> 로, 네이티브 서열이 후보로 절대 제출되지 않도록 한다 — <code>runner.py:458</code>.</p>
+<h3 id="4-llm-ag_srcllmpromptspy">(4) LLM 프롬프트 측 보존 명세 — <code>AG_src/llm/prompts.py</code></h3>
+<p>LLM 직접 변이 생성 경로(<code>build_variant_generation_prompt</code>)는 동일 제약을 자연어/few-shot 으로 강제한다.</p>
+<ul>
+<li>시스템 프롬프트 <code>VARIANT_DESIGN_SYSTEM_PROMPT</code>: "Preserve C3 and C14 (disulfide) — positions 3 and 14 FIXED", "Preserve FWKT pharmacophore — positions 7,8,9,10 FIXED" — <code>prompts.py:445-458</code></li>
+<li>거부 조건 명시: "Any mutation modifies positions 3, 7, 8, 9, 10, or 14" → output rejected — <code>prompts.py:456</code></li>
+<li><code>build_variant_generation_prompt</code> 본문도 동일 RULE 1·2 반복 + few-shot 2개 — <code>prompts.py:493-505</code></li>
+<li>few-shot 예시(<code>_SST14_FEW_SHOT_EXAMPLES</code>): <code>AGCKNFFWKTFTSC</code> → <code>PGCKHFFWKTFISC</code>(pos 1/5/12 변이), <code>AECKNLFWKTYTSC</code>(pos 2/6/11 변이) — <code>prompts.py:417-442</code>. 두 예시 모두 3·7·8·9·10·14 를 보존한다(육안 검증).</li>
+<li>Planner 시스템 프롬프트도 "PRESERVE FWKT pharmacophore (pos 7-10) and Cys3/Cys14 disulfide — never mutate these" — <code>prompts.py:69-71</code></li>
+</ul>
+<blockquote>
+<p><strong>불일치 (미검증/주의)</strong>: <code>build_variant_generation_prompt</code> 의 docstring·예시는 가변 위치를 <code>[1,2,4,5,6,11,12,13]</code> (pos 13 포함)으로 기술 — <code>prompts.py:18,255,416,479</code>. 반면 실제 엔진 <code>design_positions</code> 기본값은 13을 포함하지 않음(<code>[...,11,12]</code>, <code>schema.py:17</code>). 또한 <code>format_planner_prompt</code> 의 fallback 표시 문자열은 <code>[1,2,4,5,6,7,8,9,10,11,12,14]</code>(14 포함) — <code>prompts.py:255</code>. 이 LLM-경로 프롬프트와 실제 실행 경로(<code>generate_random_mutant</code>/<code>generate_guided_mutant</code>, <code>runner.py:614,627</code>)의 위치 집합이 <strong>서로 다르다</strong>. 실행 경로의 scaffold 게이트가 최종 안전망이므로 결과 정합성은 유지되나, 프롬프트의 위치 명세는 코드 기본값과 동기화되어 있지 않음(미해소 문서 부채).</p>
+</blockquote>
+<hr />
+<h2 id="2">② 영향 / 효과 — 이황화 파괴 방지가 없으면?</h2>
+<p><code>_preserves_disulfide</code> docstring 이 부재 시 버그를 직접 명시한다:</p>
+<blockquote>
+<p>"이전엔 가드 부재로 C14→H 변이가 통과해 SS bond 가 깨졌다." — <code>runner.py:120-121</code></p>
+</blockquote>
+<h3 id="c14h">가드 부재 시 결함 (C14H 사례)</h3>
+<ul>
+<li>SST-14 는 <strong>Cys3-Cys14 이황화결합</strong>으로 고리형(cyclic) 구조를 형성한다(프로젝트 컨텍스트 CLAUDE.md, <code>prompts.py:456</code>).</li>
+<li>가드가 없으면 변이 생성기가 pos 14 의 <code>C</code> 를 다른 아미노산(예: His)으로 치환할 수 있고, 그 후보가 거부 없이 도킹·채점까지 진입한다.</li>
+<li>결과: 이황화결합이 끊긴 <strong>선형 펩타이드</strong>가 "SST-14 analog" 으로 평가됨 → 구조·결합 자유에너지(ddG) 결과가 실제 cyclic scaffold 와 무관한 값이 됨 → 후보 랭킹·선택성 판정 오염.</li>
+<li>이는 단순 점수 오류가 아니라 <strong>scaffold 정체성 붕괴</strong>(설계 대상이 아닌 분자를 평가)에 해당.</li>
+</ul>
+<h3 id="_1">현재 가드의 효과</h3>
+<ul>
+<li><code>generate_random_mutant</code>/<code>generate_guided_mutant</code> 가 Cys 도입을 막고(<code>AA_NO_CYS</code>, <code>adapter.py:10,53,91,96</code>), <code>_mutable_design_positions</code> 가 Cys 위치를 변이 후보에서 제거하며(<code>runner.py:135-138</code>), <code>_preserves_scaffold</code> 가 잔존하는 위반 후보를 도킹 직전 거부(<code>runner.py:642-643</code>)한다.</li>
+<li>결과적으로 도킹에 들어가는 모든 후보는 <strong>FWKT 약리단 + Cys3/Cys14 이황화</strong> 가 보존된 합법 scaffold 임이 보장됨(통과 후보 한정).</li>
+<li>통합 스모크 테스트가 이 불변식을 간접 검증: <code>assert result["disulfide_intact"] is True, "Cys3-Cys14 이황화결합 유실"</code> — <code>pyrosetta_flow/tests/test_integration_smoke.py:160</code>.</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<p>retro-Q2 (<code>_workspace/release/retro-2026-Q2.md:158-169</code>)의 8개 Action Item 은 모두 <strong>CI 등록·harness 메타·문헌 LITERATURE_VALUES</strong> 등 인프라/메타 작업이며, scaffold 가드 기능 자체를 직접 다루는 항목은 <strong>없음</strong>.</p>
+<p>가장 근접한 간접 연결:
+- <strong>Q-2026-Q3-1 "CI에 pytest + routing test 등록"</strong> (<code>retro-2026-Q2.md:162</code>): 본 가드(<code>_preserves_disulfide</code>/<code>_preserves_scaffold</code>/<code>_mutable_design_positions</code>)에 대한 <strong>직접 단위 테스트가 저장소에 부재</strong>함을 확인(검색 결과 <code>pyrosetta_flow/tests</code>, <code>AG_src/tests</code>, <code>tests</code> 에 이 함수명 직접 호출 테스트 없음 — 간접 스모크만 존재, <code>test_integration_smoke.py:160</code>). 따라서 이 가드의 회귀 보호는 Q3-1 의 사정권에 들어가나, 명시적으로 지정되진 않음.</p>
+<p>연대 관계: 본 가드는 <strong>2026-06-10</strong> 에 도입(<code>runner.py:120,133</code>, <code>schema.py:15</code> 주석 날짜)되어, retro-Q2(2026-Q2 분기, CLAUDE.md Stage 이력상 2026-05-11 작성)보다 <strong>이후</strong> 작업이다. 따라서 <strong>retro-Q2 Action Item 과는 직접 무관</strong>하다.</p>
+<blockquote>
+<p><strong>결론</strong>: 직접 연결되는 Action Item 없음. 사유 — (a) 가드 도입(2026-06-10)이 retro-Q2(2026-05-11) 이후, (b) retro-Q2 의 8건은 메타/CI/문헌 작업으로 scaffold 보존 로직과 도메인이 다름. 기능 동기는 Action Item 이 아니라 <strong>메모리의 선택성 GOAL</strong>(<code>sstr2-selectivity-goal</code>, 2026-06-10)에 있음 — 무한 발굴 엔진에서 다수 변이를 자동 생성할 때 scaffold 무결성을 보장하기 위함.</p>
+</blockquote>
+<hr />
+<h2 id="4">④ 완성도 % + 근거</h2>
+<p><strong>완성도: 약 85%</strong></p>
+<p>근거:
+- (+) 핵심 보존 로직 3중 방어(위치 제외 + 생성기 Cys 배제 + 사후 게이트) 모두 구현·연결됨 — <code>runner.py:135-138,642-643</code>, <code>adapter.py:10,91</code>.
+- (+) 거부 시 재시도·escalation·폴백·실패표시까지 완비 — <code>runner.py:601-679</code>.
+- (+) LLM 경로 프롬프트에도 동일 제약 명세 + few-shot — <code>prompts.py:445-458,493-505</code>.
+- (+) 도킹 단계가 fail_reason 후보를 즉시 999 처리하여 오염 차단 — <code>runner.py:721-732</code>.
+- (−) <strong>직접 단위 테스트 부재</strong>: <code>_preserves_disulfide</code>/<code>_preserves_scaffold</code>/<code>_mutable_design_positions</code> 를 직접 호출하는 회귀 테스트 미발견(간접 스모크 1건만, <code>test_integration_smoke.py:160</code>). C14H 회귀를 명시 방어하는 테스트가 없음 → 약 -10%.
+- (−) <strong>프롬프트↔코드 위치 명세 불일치</strong>: LLM 경로 가변 위치(<code>[1,2,4,5,6,11,12,13]</code>/14 포함)와 실행 경로 <code>design_positions</code>(<code>[...,11,12]</code>)가 다름 — <code>prompts.py:255,479</code> vs <code>schema.py:17</code> → 약 -5%.
+- (−) <code>_mutable_design_positions</code> 폴백(<code>runner.py:139</code>)이 FWKT/Cys 를 재포함시킬 수 있는 경로 존재(게이트가 후단에서 차단하나 방어적 설계 관점에서 미세 결함) — 미검증 영향, 감점 소.</p>
+<hr />
+<h2 id="5">⑤ 학술 가치 (상 / 중 / 하)</h2>
+<p><strong>평가: 상(高)</strong></p>
+<p>근거:
+- 펩타이드/단백질 설계에서 <strong>scaffold 제약(disulfide-constrained, pharmacophore-fixed mutagenesis)</strong> 은 표준적이고 학술적으로 중요한 설계 원리다. 무작위/유도 변이가 약물활성단(FWKT)과 구조 결정 요소(이황화결합)를 보존하도록 강제하는 것은, 설계 공간을 "생물학적으로 유효한 analog" 로 한정하는 핵심 메커니즘이다.
+- SST-14 의 FWKT 는 SSTR 결합 약리단으로 알려져 있고(<code>prompts.py:449,497</code> 명세), Cys3-Cys14 이황화는 활성 형태(β-turn) 유지에 필수 — 이를 코드 레벨에서 불변식으로 박제한 것은 "유효 analog 만 평가" 라는 방법론적 정당성을 부여한다.
+- 본 가드가 막는 결함(scaffold 정체성 붕괴, ②의 C14H 사례)은 in-silico 스크리닝 결과의 <strong>타당성(validity)</strong> 에 직결되므로, 단순 엔지니어링이 아닌 <strong>과학적 방법론 가드</strong>의 성격을 가진다.
+- 감점 요소: 보존 판정이 "위치 동일성"이라는 단순 비교(<code>runner.py:111,123</code>)로, 보존적 치환(conservative substitution)·이황화 위상(topology) 검증 같은 정교한 구조 화학 검증은 아님. 이는 적정 단순화이나 "고급 학술 기여"라기보다 "필수 건전성 가드" 수준. 그럼에도 스크리닝 결과 신뢰성에 미치는 영향이 커 종합 <strong>상</strong>.</p>
+<hr />
+<h2 id="6-config">⑥ 사용법 (config / 함수)</h2>
+<h3 id="config-flowconfig-schemapy">관련 config (<code>FlowConfig</code>, <code>schema.py</code>)</h3>
+<ul>
+<li><code>original_sequence</code> (기본 <code>"AGCKNFFWKTFTSC"</code>, <code>schema.py:13</code>) — Cys 위치·약리단 슬라이스의 기준 서열.</li>
+<li><code>design_positions</code> (기본 <code>[1,2,4,5,6,7,8,9,10,11,12]</code>, <code>schema.py:14-18</code>) — 변이 후보 풀의 원천. 여기서 FWKT·Cys 가 자동 제외됨.</li>
+<li><code>max_dedup_trials</code> (기본 50, <code>schema.py:40</code>) — scaffold/dedup 재시도 내층 횟수.</li>
+<li><code>max_random_mutations</code> (기본 3, <code>schema.py:41</code>) — 동시 변이 수 상한(escalation 시 +1).</li>
+<li><code>n_candidates</code> (기본 8, <code>schema.py:19</code>) — iteration 당 생성 후보 수.</li>
+</ul>
+<h3 id="runnerpy">호출 흐름 (자동, <code>runner.py</code>)</h3>
+<ol>
+<li><code>run_pyrosetta_agentic_mutdock_flow(config)</code> 진입 — <code>runner.py:294</code>.</li>
+<li>변이 단계에서 <code>mutation_positions = _mutable_design_positions(config)</code> — <code>runner.py:596</code>.</li>
+<li>후보별 루프에서 <code>generate_guided_mutant</code>(가이드 있을 때) 또는 <code>generate_random_mutant</code> 호출 — <code>runner.py:613-638</code>.</li>
+<li>제안마다 <code>_preserves_scaffold(proposal, config.original_sequence)</code> 게이트 — <code>runner.py:642</code>.
+   (직접 호출형 보조: <code>_preserves_pharmacophore</code>, <code>_preserves_disulfide</code>, <code>_disulfide_cys_positions</code> — <code>runner.py:110,119,114</code>)</li>
+</ol>
+<h3 id="llm">LLM 직접 변이 생성 (선택적 경로)</h3>
+<ul>
+<li><code>build_variant_generation_prompt(reference_sequence, mutable_positions, n_mutations, variant_id)</code> — <code>prompts.py:461-532</code>.</li>
+<li>옵션 시스템 프롬프트: <code>VARIANT_DESIGN_SYSTEM_PROMPT</code> — <code>prompts.py:445</code>.</li>
+<li>사용 예: <code>provider.generate_json(prompt, system_prompt=VARIANT_DESIGN_SYSTEM_PROMPT)</code> — <code>prompts.py:14-21,485</code> (docstring 예시). 단, ④에서 지적한 위치 명세 불일치 유의.</li>
+</ul>
+<hr />
+<h2 id="7-action">⑦ (Action 무관 시) 왜 필요한가</h2>
+<p>본 기능은 retro-Q2 Action Item 과 직접 무관(③)하므로 필요성을 명시한다.</p>
+<ul>
+<li><strong>유효 analog 보장</strong>: 무한 발굴 엔진(메모리 <code>sstr2-selectivity-goal</code>, <code>continuous.py</code>)은 매 iteration 다수 변이를 자동 생성한다. 가드가 없으면 자동 생성 과정에서 FWKT/이황화를 깨는 후보가 섞여, 결합활성을 잃은 분자가 "SST-14 analog 후보" 로 도킹·랭킹에 진입한다.</li>
+<li><strong>C14H 회귀의 영구 차단</strong>: 실제로 가드 부재 시 C14→H 변이가 통과해 SS bond 가 깨진 전례가 있다(<code>runner.py:120-121</code>). 본 가드는 그 회귀를 코드 불변식으로 봉인한다.</li>
+<li><strong>선택성 캠페인 신뢰성</strong>: 캠페인 목표는 SSTR2 선택성(Δmargin&gt;0, <code>prompts.py:86-95</code>)이다. scaffold 가 깨진 후보의 ddG/선택성 수치는 무의미하므로, 가드는 <strong>선택성 판정의 입력 건전성</strong>을 지키는 전제 조건이다.</li>
+</ul>
+<hr />
+<h2 id="fileline">검증 인용 목록 (file:line)</h2>
+<p><strong><code>pyrosetta_flow/runner.py</code></strong>
+- <code>:102</code> — <code>PHARMACOPHORE_POSITIONS_1IDX = (7, 8, 9, 10)</code>
+- <code>:103</code> — <code>PHARMACOPHORE_RETRY_LIMIT = 3</code>
+- <code>:106-107</code> — <code>_pharmacophore_slice</code> (7-10 슬라이스)
+- <code>:110-111</code> — <code>_preserves_pharmacophore</code> (슬라이스 동일성)
+- <code>:114-116</code> — <code>_disulfide_cys_positions</code> (참조 Cys 위치 1-indexed)
+- <code>:119-123</code> — <code>_preserves_disulfide</code> + docstring "C14→H 변이가 통과해 SS bond 가 깨졌다"
+- <code>:126-129</code> — <code>_preserves_scaffold</code> = 약리단 AND 이황화
+- <code>:132-139</code> — <code>_mutable_design_positions</code> (FWKT·Cys 제외 + 폴백)
+- <code>:458</code> — <code>seen_sequences = {config.original_sequence}</code> (네이티브 제외)
+- <code>:596</code> — <code>mutation_positions = _mutable_design_positions(config)</code>
+- <code>:597-687</code> — 후보 생성 이중 루프
+- <code>:601</code> — 약리단 재시도 외층 <code>range(PHARMACOPHORE_RETRY_LIMIT + 1)</code>
+- <code>:603</code> — dedup 내층 <code>range(max_trials)</code>
+- <code>:605-611</code> — 변이 수 escalation
+- <code>:613-638</code> — guided/random 변이 호출
+- <code>:640-643</code> — 거부 분기(원본/중복 continue, scaffold 위반 break)
+- <code>:644-646</code> — mutant 확정 + seen 등록
+- <code>:649-672</code> — 폴백 경로
+- <code>:674-679</code> — 최종 실패 <code>fail_reason = "FWKT pharmacophore gate failed after 3 retries"</code>
+- <code>:721-732</code> — fail_reason 후보 ddg=999 처리</p>
+<p><strong><code>pyrosetta_flow/schema.py</code></strong>
+- <code>:13</code> — <code>original_sequence = "AGCKNFFWKTFTSC"</code>
+- <code>:14-18</code> — <code>design_positions</code> 기본값 + Cys14 제거 주석
+- <code>:19</code> — <code>n_candidates = 8</code>
+- <code>:40</code> — <code>max_dedup_trials = 50</code>
+- <code>:41</code> — <code>max_random_mutations = 3</code></p>
+<p><strong><code>pyrosetta_flow/adapter.py</code></strong>
+- <code>:10</code> — <code>AA_NO_CYS = list("ADEFGHIKLMNPQRSTVWY")</code>
+- <code>:36-55</code> — <code>generate_random_mutant</code> (AA_NO_CYS 치환)
+- <code>:58-99</code> — <code>generate_guided_mutant</code>
+- <code>:91</code> — 추천 풀에서 <code>aa != "C"</code> 배제
+- <code>:96</code> — 폴백 풀 <code>AA_NO_CYS</code></p>
+<p><strong><code>AG_src/llm/prompts.py</code></strong>
+- <code>:18,255,416,479</code> — LLM 경로 가변 위치 명세(<code>[1,2,4,5,6,11,12,13]</code> 등) — 코드 기본값과 불일치
+- <code>:69-71</code> — Planner: "PRESERVE FWKT (7-10) and Cys3/Cys14 — never mutate these"
+- <code>:86-95</code> — Critic: 선택성 Δmargin 목표
+- <code>:417-442</code> — <code>_SST14_FEW_SHOT_EXAMPLES</code> (3/7/8/9/10/14 보존 예시)
+- <code>:445-458</code> — <code>VARIANT_DESIGN_SYSTEM_PROMPT</code> (RULE 1·2, 거부 조건)
+- <code>:461-532</code> — <code>build_variant_generation_prompt</code>
+- <code>:493-505</code> — 프롬프트 본문 RULE 반복</p>
+<p><strong>테스트 / Action Item</strong>
+- <code>pyrosetta_flow/tests/test_integration_smoke.py:160</code> — <code>disulfide_intact is True</code> 간접 검증
+- <code>_workspace/release/retro-2026-Q2.md:158-169</code> — Phase E Action Item 8건(직접 무관)
+- <code>_workspace/release/retro-2026-Q2.md:162</code> — Q-2026-Q3-1 "CI에 pytest 등록"(간접 연결)</p>
+<p><strong>미검증 항목</strong>
+- <code>_preserves_disulfide</code>/<code>_preserves_scaffold</code>/<code>_mutable_design_positions</code> 직접 단위 테스트 부재 (저장소 검색 결과 미발견 — 직접 호출 테스트 없음, 간접 스모크만 존재)
+- <code>_mutable_design_positions</code> 폴백(<code>runner.py:139</code>) 발동 시 FWKT/Cys 재포함 가능성의 실제 영향 (게이트 후단 차단으로 결과 영향은 차단 추정)</p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

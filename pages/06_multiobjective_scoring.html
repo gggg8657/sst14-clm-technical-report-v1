@@ -1,0 +1,470 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📊 다목적 스코어링 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html" class="active">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="06-nsga-ii-pareto-scalar-gnina-ecr">06. 다목적 스코어링 (NSGA-II Pareto + scalar, GNINA, ECR) 기능 분석</h1>
+<blockquote>
+<p>대상 모듈
+- <code>pyrosetta_flow/multiobjective.py</code> — ObjectiveWeights, cheap_objectives, multiobjective_scalar, screen_selectivity, 독성 페널티
+- <code>pyrosetta_flow/pareto_ranking.py</code> — NSGA-II 비지배 정렬 + crowding distance
+- <code>pyrosetta_flow/gnina_rescoring.py</code> — GNINA CNN rescoring + ECR consensus
+- <code>pyrosetta_flow/ranking.py</code> — 실험 로그 기반 집계 랭킹(보조)
+- <code>pyrosetta_flow/scoring_pipeline.py</code> — 4목적 통합 체인(ECR consensus 포함)</p>
+<p>본 보고서의 모든 사실 주장은 <code>file_path:line</code> 으로 인용한다. 미확인 항목은 <strong>미검증</strong>으로 명시한다.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11-4-g-admet">1.1 4개 목적의 정의 (ΔG + 반감기 + 선택성 + ADMET)</h3>
+<p>다목적 프레임은 SST-14(<code>AGCKNFFWKTFTSC</code>) 변이체를 4축으로 평가한다 (<code>multiobjective.py:5-9</code>):</p>
+<table>
+<thead>
+<tr>
+<th>목적</th>
+<th>방향</th>
+<th>산출 출처</th>
+<th>성격</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ddg</code></td>
+<td>↓ (낮을수록 결합 강함)</td>
+<td>PyRosetta FlexPepDock (실측 REU/kcal·mol)</td>
+<td><strong>실측</strong></td>
+</tr>
+<tr>
+<td><code>selectivity_margin</code> / <code>delta_margin</code></td>
+<td>↑ (양수=SSTR2 선택적)</td>
+<td>off-target PyRosetta 도킹</td>
+<td><strong>실측</strong></td>
+</tr>
+<tr>
+<td><code>half_life_h</code> → <code>stability_norm</code></td>
+<td>↑</td>
+<td>서열 기반 앙상블 surrogate</td>
+<td><strong>surrogate</strong></td>
+</tr>
+<tr>
+<td><code>admet_score</code></td>
+<td>↑</td>
+<td>물성(GRAVY/Boman/Instability/pI) surrogate</td>
+<td><strong>surrogate</strong></td>
+</tr>
+</tbody>
+</table>
+<p>honest disclaimer (<code>multiobjective.py:15-18</code>): <code>half_life_h</code>, <code>admet_score</code> 는 <strong>랭킹용 surrogate</strong> 이며 임상 반감기·임상 ADMET 수치가 아니다. <code>ddg</code>·<code>selectivity_margin</code> 은 실제 FlexPepDock 결과지만 절대 친화도(Ki/Kd)가 아니다. 이는 VR-cycle-09 / H-06("계산 불가능을 계산 가능한 척 하지 않기") 원칙의 코드 반영이다.</p>
+<h3 id="12-cost-tiered">1.2 비용 계층화 (cost-tiered)</h3>
+<p>실제 도킹이 비싸므로 2계층으로 나눈다 (<code>multiobjective.py:11-13</code>):</p>
+<ul>
+<li><strong>Layer 0 (모든 후보, 서열만, μs급)</strong>: 반감기 + ADMET surrogate — <code>cheap_objectives()</code> (<code>multiobjective.py:101-155</code>)</li>
+<li><strong>Layer 1 (top-K, 실제 PyRosetta, 수분급)</strong>: off-target 선택성 도킹 — <code>screen_selectivity()</code> (<code>multiobjective.py:361-458</code>)</li>
+</ul>
+<h4 id="layer-0-cheap_objectives">Layer 0 — cheap_objectives</h4>
+<ul>
+<li>반감기: <code>halflife_ensemble.ensemble_halflife</code> (휴리스틱 A + RandomForest C 결합)을 호출, 실패 시 레거시 휴리스틱 단독으로 폴백 (<code>multiobjective.py:113-129</code>). <code>stability_norm</code> 은 log10 정규화로 0~1 변환 (<code>multiobjective.py:127-129</code>).</li>
+<li>ADMET: <code>PharmaProperties</code> 로 GRAVY/Boman/Instability/aliphatic/pI 계산 (<code>multiobjective.py:135-153</code>). Cys3-Cys14 SS bond 를 pI 계산에서 제외한다 (<code>multiobjective.py:139-140</code>, 0-indexed 최소·최대 Cys).</li>
+<li><code>admet_reasonableness()</code> 가 4개 물성을 0~1 부분점수로 변환 후 가중 평균 (<code>multiobjective.py:64-90</code>):</li>
+<li>가중치: Instability 0.35 + GRAVY 0.30 + Boman 0.15 + pI 0.20 (<code>multiobjective.py:89</code>)</li>
+<li>Instability &lt;40 만점, 40~80 선형 감점 (<code>multiobjective.py:75</code>)</li>
+<li>GRAVY ≤-1 만점(친수), ≥1 0점 (<code>multiobjective.py:77</code>)</li>
+<li>Boman &lt;1.0 약함, 1.0~4.0 선형, &gt;4.0 만점 (<code>multiobjective.py:79-84</code>)</li>
+<li>pI 6~8 만점 (<code>multiobjective.py:86</code>)</li>
+</ul>
+<h4 id="layer-05-pepadmet">Layer 0.5 — pepADMET 독성 페널티</h4>
+<ul>
+<li><code>predict_toxicity_for_sequences()</code> 가 pepADMET GNN 을 별도 conda env subprocess 로 배치 추론 (<code>multiobjective.py:188-203</code>). 미설치/실패 시 빈 dict 반환(graceful).</li>
+<li><code>apply_toxicity_to_extra()</code> 가 결과를 <code>admet_score</code> 에 곱셈 페널티로 반영 (<code>multiobjective.py:206-241</code>):</li>
+<li>binary <code>is_toxic</code> 는 <strong>비변별적</strong>(oxytocin·native 까지 전부 toxic 판정)이라 게이트에 쓰지 않고 기록만 함 (<code>multiobjective.py:211-219</code>)</li>
+<li>대신 hc50 연속값을 <strong>native SST-14 기준선 대비(home-advantage)</strong> 로 평가 (<code>multiobjective.py:222-241</code>). native ±5.0 밴드는 "동급" 무페널티 (<code>_HC50_NATIVE_TOLERANCE=5.0</code>, <code>multiobjective.py:166</code>), 초과분에 선형 비례 페널티(하한 <code>_TOXIC_ADMET_PENALTY=0.4</code>, <code>multiobjective.py:163,238</code>).</li>
+<li>2026-06-17 (VR-A2) 추가: SMILES 파싱 실패로 선형 폴백된 경우 cyclic 구조 소실로 hc50 신뢰 불가 → 게이트 skip(fail-open), 플래그만 기록 (<code>multiobjective.py:225-228</code>).</li>
+<li><code>available=False</code>(추론 불가)면 <code>admet_score</code> 를 건드리지 않음 — fail-closed, 가짜 안전 판정 방지 (<code>multiobjective.py:209,217</code>).</li>
+</ul>
+<h4 id="layer-1-screen_selectivity">Layer 1 — screen_selectivity</h4>
+<ul>
+<li>top-K 후보의 SSTR2 정밀화 복합체를 SSTR1/3/4/5 에 off-target 도킹 (<code>multiobjective.py:361-458</code>).</li>
+<li>SSTR2(동일 프로토콜 baseline) + off-target 4종을 <code>ThreadPoolExecutor</code> 로 <strong>병렬</strong> 도킹 (순차 ~25분 → 병렬 ~6분/후보) (<code>multiobjective.py:401-425</code>).</li>
+<li><code>selectivity_margin = min(offtarget_ddg) - baseline</code> (양수=SSTR2 더 강함=선택적, G-2 SSOT) (<code>multiobjective.py:434-435</code>).</li>
+<li><strong>home-advantage 보정</strong>: native 도 동일 프로토콜에서 +margin 편향이 있으므로 native baseline 대비 <code>delta_margin = margin - nat_margin</code> 이 진짜 선택성 신호 (<code>multiobjective.py:436-447</code>). <code>more_selective_than_native = delta_margin &gt; 0</code> (<code>multiobjective.py:448</code>).</li>
+<li>NaN 도킹 결과는 fail-closed 로 None 처리 (<code>multiobjective.py:419</code>), 전부 실패 시 <code>selectivity_margin=None</code> (<code>multiobjective.py:429-430</code>).</li>
+<li>top-K 선별: clash 게이트(<code>clash_max=10.0</code>) 통과 후 ddg 오름차순 상위 K (<code>select_topk_for_selectivity</code>, <code>multiobjective.py:308-323</code>).</li>
+</ul>
+<h3 id="13-nsga-ii-pareto-front-pareto_rankingpy">1.3 NSGA-II Pareto front (<code>pareto_ranking.py</code>)</h3>
+<p>레거시 가중합(0.45/0.20/0.15/0.10/0.10)을 pymoo 기반 비지배 정렬 + crowding distance 로 대체 (<code>pareto_ranking.py:3-4</code>).</p>
+<ul>
+<li><strong>4목적 모두 최소화로 변환</strong> (<code>_extract_objectives</code>, <code>pareto_ranking.py:35-53</code>): <code>[ddG, -stability, -druggability, -diversity]</code> — stability/druggability/diversity 는 부호 반전(<code>pareto_ranking.py:53</code>).</li>
+<li><strong>제약</strong> (<code>_extract_constraints</code>, <code>pareto_ranking.py:56-77</code>): <code>hard_violations ≤ 0</code>, <code>clash_score - threshold ≤ 0</code> (기본 임계 10.0, <code>pareto_ranking.py:32</code>).</li>
+<li><code>pareto_rank_candidates()</code> 흐름 (<code>pareto_ranking.py:125-190</code>):
+  1. 목적 행렬 F(n×4) + 제약 위반 벡터 cv(양의 위반 합) 구성 (<code>pareto_ranking.py:158-166</code>)
+  2. <code>NonDominatedSorting().do(F)</code> 로 front 분리 (<code>pareto_ranking.py:169-170</code>)
+  3. <code>_penalise_infeasible()</code> 로 infeasible 후보를 모든 feasible front 뒤로 밀어내고, 위반량 오름차순 단일 페널티 front 로 부착 (<code>pareto_ranking.py:80-117,173</code>)
+  4. front별 <code>calc_crowding_distance</code> 계산(경계점=inf), 후보당 2개 길이 ≤2 인 front 는 전부 inf (<code>pareto_ranking.py:180-188</code>)
+  5. <code>pareto_rank</code>(0=최우선 front), <code>crowding_distance</code>(높을수록 고립/다양) 부여 (<code>pareto_ranking.py:186-188</code>)</li>
+<li><code>select_from_pareto_front()</code>: rank 오름차순 → crowding distance 내림차순 정렬 후 상위 n (<code>pareto_ranking.py:193-231</code>).</li>
+<li><strong>주의</strong>: <code>diversity</code> 는 현재 항상 0.0 으로 입력되어(<code>scoring_pipeline.py:218</code>) 4목적 중 1개가 사실상 비활성 상태다(미검증: 다른 호출 경로에서 채워질 가능성).</li>
+</ul>
+<h3 id="14-gnina-cnn-rescoring-gnina_rescoringpy">1.4 GNINA CNN rescoring (<code>gnina_rescoring.py</code>)</h3>
+<p>FlexPepDock 출력 PDB 를 GNINA <code>--score_only</code> 모드로 재채점 (<code>gnina_rescoring.py:1-9</code>).</p>
+<ul>
+<li><strong>dry-run mock 여부 — 확인됨</strong>: <code>gnina</code> 바이너리가 PATH 에 없으면 경고 로그 + 결정론적 mock 점수 반환 (<code>gnina_rescoring.py:7-9,30,45-47,205-210</code>). mock 값은 <code>gnina_cnn_score/affinity/vina_score = 0.0</code>, <code>gnina_dry_run = 1.0</code> (<code>gnina_rescoring.py:32-37</code>).</li>
+<li><strong>현 환경에서 실측 확인</strong>: <code>which gnina</code> → not found. 따라서 현재 GNINA 단계는 <strong>dry-run mock 으로 동작 중</strong>이며 실제 CNN 점수가 아니다.</li>
+<li>복합체 PDB 를 chain 기준으로 receptor(A)/peptide(B) 임시파일 분리 (<code>split_receptor_peptide</code>, <code>gnina_rescoring.py:97-176</code>).</li>
+<li>단일 rescore: subprocess 호출, rc≠0/timeout 시 NaN + 에러 플래그 반환 (<code>gnina_rescore</code>, <code>gnina_rescoring.py:179-265</code>).</li>
+<li>배치: <code>ThreadPoolExecutor</code> 병렬, 입력 순서 보존 (<code>batch_gnina_rescore</code>, <code>gnina_rescoring.py:268-324</code>).</li>
+<li>stdout 파싱: <code>CNNscore</code> 헤더 다음 줄에서 3토큰 추출, 실패 시 NaN (<code>_parse_gnina_output</code>, <code>gnina_rescoring.py:50-89</code>).</li>
+</ul>
+<h3 id="15-ecr-exponential-rank-consensus">1.5 ECR (Exponential Rank Consensus)</h3>
+<p>여러 점수항을 순위 기반으로 통합 (<code>exponential_rank_consensus</code>, <code>gnina_rescoring.py:327-395</code>).</p>
+<ul>
+<li>공식: <code>ECR_i = Σ_k exp(-rank_{i,k} / N)</code>, N=후보 수, 높을수록 좋음 (<code>gnina_rescoring.py:333-337,388</code>).</li>
+<li>모든 지원 점수항은 <strong>낮을수록 좋음</strong> → 오름차순 1-based 순위 부여 (<code>gnina_rescoring.py:367-382</code>). NaN/비수치는 inf 로 밀어 최악 순위 (<code>gnina_rescoring.py:374-375</code>).</li>
+<li>입력 dict 를 변형하지 않고 <code>ecr_score</code> + <code>ecr_ranks</code> 를 추가한 사본 반환, ecr_score 내림차순 정렬 (<code>gnina_rescoring.py:385-395</code>).</li>
+<li>기본 score_keys: <code>gnina_cnn_score, gnina_cnn_affinity, gnina_vina_score</code> (<code>gnina_rescoring.py:359-360</code>). 단, 파이프라인에서는 <strong><code>ddg</code> 를 추가</strong>해 4개 항으로 호출 (<code>scoring_pipeline.py:177</code>).</li>
+</ul>
+<h3 id="16-multiobjective_scalar">1.6 스칼라 가중 (multiobjective_scalar)</h3>
+<p>UI 정렬 보조용 단일 점수 (<code>multiobjective.py:281-305</code>).</p>
+<ul>
+<li><strong>가중치 (코드 직접 확인, <code>ObjectiveWeights</code>, <code>multiobjective.py:273-278</code>)</strong>:</li>
+<li><code>ddg = 0.40</code> (결합, 최우선)</li>
+<li><code>selectivity = 0.25</code></li>
+<li><code>stability = 0.20</code></li>
+<li><code>admet = 0.15</code></li>
+<li>합 = 1.00</li>
+<li>정규화 (<code>multiobjective.py:293-298</code>): ddg 는 <code>(ddg_ref - ddg)/ddg_scale</code> (기본 ref=0, scale=50, <code>multiobjective.py:284-285</code>), selectivity_margin 은 <code>/20.0</code> 포화, stability/admet 은 이미 0~1.</li>
+<li>최종 점수 = 가중 선형합 (<code>multiobjective.py:299-305</code>). runner 는 <code>_mo_scalar()</code> 로 UI 표시용으로만 사용 (<code>runner.py:64-73</code>).</li>
+</ul>
+<h3 id="17-scoring_pipelinepy">1.7 통합 체인 배선 (scoring_pipeline.py)</h3>
+<p><code>_apply_alternative_scoring()</code> 가 FlexPepDock 결과에 5단계를 순차 적용, 각 단계 graceful skip (<code>scoring_pipeline.py:42-281</code>):</p>
+<table>
+<thead>
+<tr>
+<th>단계</th>
+<th>내용</th>
+<th>위치</th>
+<th>skip 조건</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>cheap objectives (반감기+ADMET)</td>
+<td><code>scoring_pipeline.py:79-95</code></td>
+<td>예외 시 non-fatal</td>
+</tr>
+<tr>
+<td>0.5</td>
+<td>pepADMET 독성 페널티</td>
+<td><code>scoring_pipeline.py:102-120</code></td>
+<td><code>SST_DISABLE_PEPADMET_TOX</code> env / 미설치</td>
+</tr>
+<tr>
+<td>1</td>
+<td>GNINA rescore (dry-run fallback)</td>
+<td><code>scoring_pipeline.py:125-157</code></td>
+<td><code>_HAS_GNINA</code> + PDB 존재</td>
+</tr>
+<tr>
+<td>2</td>
+<td>ECR consensus (ddg+GNINA 4항)</td>
+<td><code>scoring_pipeline.py:162-189</code></td>
+<td>GNINA 결과 있을 때만</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Pareto ranking (NSGA-II)</td>
+<td><code>scoring_pipeline.py:201-243</code></td>
+<td><code>_HAS_PARETO</code>(pymoo)</td>
+</tr>
+<tr>
+<td>4</td>
+<td>BO suggest (로그만, 부수효과 없음)</td>
+<td><code>scoring_pipeline.py:249-279</code></td>
+<td><code>bo_optimizer</code> 전달 + 관측 ≥2</td>
+</tr>
+</tbody>
+</table>
+<p>Pareto 입력 폴백 (<code>scoring_pipeline.py:204-221</code>): <code>stability_norm</code> 부재 시 clash 기반 proxy(<code>(40-clash)/40</code>), <code>admet_score</code> 부재 시 ECR 폴백, <code>diversity=0.0</code> 고정.</p>
+<hr />
+<h2 id="2">② 영향</h2>
+<ul>
+<li><strong>선택 품질</strong>: 가중합 단일 점수의 임의 가중치 의존을 NSGA-II Pareto front 로 대체해, 목적 간 trade-off 를 명시적으로 보존한다(front-0 후보 집합). 단일 스칼라는 UI 정렬 보조로 격하 (<code>runner.py:64-73</code>).</li>
+<li><strong>비용 효율</strong>: cost-tiered 구조로 비싼 off-target 도킹을 top-K 에만 적용(<code>multiobjective.py:11-13</code>, <code>runner.py:1414-1418</code>), 수용체 병렬화로 후보당 ~25분→~6분 (<code>multiobjective.py:401-403</code>).</li>
+<li><strong>정직성(가드)</strong>: surrogate/실측 구분 명시(<code>multiobjective.py:15-18</code>), fail-closed 독성 게이트(<code>multiobjective.py:209</code>), home-advantage 보정으로 native 편향 제거(<code>multiobjective.py:436-447</code>). 환각 점수 차단이 설계에 내장.</li>
+<li><strong>견고성</strong>: 모든 옵셔널 의존(GNINA/pymoo/pepADMET)을 graceful skip 으로 처리, 부재 환경에서도 파이프라인 진행(<code>scoring_pipeline.py</code> 전반).</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item (다목적 통합)</h2>
+<p>CLAUDE.md 의 Stage 적용 이력 및 진행 메모(MEMORY.md)와 연계되는 항목:</p>
+<ul>
+<li><strong>다목적 통합 본체</strong>: ΔG+반감기+선택성+ADMET 4축 통합 (<code>multiobjective.py:5-9</code>) — sstr2-selectivity-goal(2026-06-10) 의 Δmargin home-advantage 보정과 직결 (<code>multiobjective.py:436-447</code>).</li>
+<li><strong>반감기 앙상블 통합</strong> (2026-06-09): 휴리스틱 A + RF C 결합 (<code>multiobjective.py:111-121</code>) — MEMORY 의 "ensemble" 진행 항목.</li>
+<li><strong>pepADMET 독성 통합</strong> (B, 2026-06-09 / VR-A2 2026-06-17): binary 비변별성 발견 → hc50 home-advantage 게이트 전환 (<code>multiobjective.py:164-241</code>).</li>
+<li><strong>VR-cycle-09 / H-06 가드</strong>: surrogate honest disclaimer 의 코드 반영 (<code>multiobjective.py:15-18</code>), CLAUDE.md Stage 8h 와 직결.</li>
+<li><strong>god-object 분리</strong> (P1, 2026-06-09): runner.py 의 스코어링 체인을 scoring_pipeline.py 로 추출 (<code>scoring_pipeline.py:3</code>).</li>
+<li><strong>잔여 갭(권고)</strong>: <code>diversity</code> 목적이 항상 0.0 으로 비활성 (<code>scoring_pipeline.py:218</code>) — NSGA-II 4목적 중 1개 미활용. 다양성 메트릭(서열 거리 등) 연결이 미완 Action Item 후보.</li>
+</ul>
+<hr />
+<h2 id="4">④ 완성도 및 근거</h2>
+<p><strong>완성도: 약 80%</strong></p>
+<table>
+<thead>
+<tr>
+<th>영역</th>
+<th>완성도</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>cheap_objectives / ADMET surrogate</td>
+<td>95%</td>
+<td>완전 구현 + 폴백 + SS bond 처리 (<code>multiobjective.py:64-155</code>), 테스트 보유 (<code>tests/test_multiobjective.py</code>)</td>
+</tr>
+<tr>
+<td>독성 페널티 (hc50 home-adv)</td>
+<td>90%</td>
+<td>fail-closed/fail-open 분기 완비 (<code>multiobjective.py:206-241</code>), 단 pepADMET 미설치 시 skip</td>
+</tr>
+<tr>
+<td>screen_selectivity (Layer 1)</td>
+<td>85%</td>
+<td>병렬 도킹+home-adv 보정 완비 (<code>multiobjective.py:361-458</code>), config-gated(<code>enable_selectivity</code>)</td>
+</tr>
+<tr>
+<td>NSGA-II Pareto</td>
+<td>90%</td>
+<td>비지배 정렬+crowding+제약 처리 완비 (<code>pareto_ranking.py</code> 전체), 단 diversity 미입력</td>
+</tr>
+<tr>
+<td>GNINA rescoring</td>
+<td>60%</td>
+<td><strong>현 환경 dry-run mock 으로만 동작</strong>(바이너리 부재 확인), 실측 경로 미검증 (<code>gnina_rescoring.py:205-210</code>)</td>
+</tr>
+<tr>
+<td>ECR consensus</td>
+<td>95%</td>
+<td>공식 구현 + NaN 처리 완비 (<code>gnina_rescoring.py:327-395</code>)</td>
+</tr>
+<tr>
+<td>scalar 통합</td>
+<td>90%</td>
+<td>가중치 정의+정규화 완비 (<code>multiobjective.py:273-305</code>), UI 보조 역할 명확</td>
+</tr>
+<tr>
+<td>diversity 목적</td>
+<td>20%</td>
+<td>항상 0.0 입력으로 비활성 (<code>scoring_pipeline.py:218</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>미완/미검증:
+- GNINA 실측(live) 경로는 바이너리 부재로 본 환경에서 <strong>미검증</strong> — dry-run 만 확인.
+- <code>diversity</code> 목적 미연결.
+- pepADMET/halflife RF 의 실제 모델 정확도는 본 보고 범위 밖(surrogate 면책 명시됨).</p>
+<hr />
+<h2 id="5-nsga-ii">⑤ 학술 가치 (NSGA-II 다목적 최적화의 의의)</h2>
+<ul>
+<li><strong>Pareto-optimal trade-off 보존</strong>: 약물 후보는 결합력↑·반감기↑·선택성↑·ADMET↑ 가 서로 상충하는 전형적 다목적 문제다. 가중합은 가중치 선택에 따라 비볼록(non-convex) front 의 일부 해를 영구히 배제하지만, NSGA-II 비지배 정렬은 trade-off surface 전체를 보존한다 (<code>pareto_ranking.py:3-11</code>). 이는 임의 가중치 가정 없이 의사결정자에게 다양한 후보 집합을 제공한다.</li>
+<li><strong>Crowding distance 로 다양성 유지</strong>: 동일 front 내에서 고립된(다양한) 해를 우선 선택해 화학적 공간 탐색의 조기 수렴을 방지 (<code>pareto_ranking.py:180-188,224-228</code>).</li>
+<li><strong>제약 처리</strong>: clash/hard_violation infeasible 해를 feasible front 뒤로 relegate 하는 constraint-domination 방식은 Deb 의 NSGA-II 표준 제약 처리와 정합적 (<code>pareto_ranking.py:80-117</code>).</li>
+<li><strong>ECR consensus</strong>: 절대 점수 스케일이 이질적인 다양한 채점기(ddG REU vs GNINA CNN vs Vina kcal)를 순위 공간에서 통합하는 rank-based consensus 는 스케일 불변성을 확보, 단일 채점기 편향을 완화 (<code>gnina_rescoring.py:333-337</code>).</li>
+<li><strong>정직한 surrogate 분리</strong>: surrogate(반감기/ADMET)와 실측(ddG/선택성)을 명시 구분하고 home-advantage 로 baseline 편향을 보정하는 방법론은 AI 후보 발굴의 재현성·신뢰성 측면에서 학술적으로 의미 있는 가드다 (<code>multiobjective.py:15-18,436-447</code>).</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<h3 id="runner">통합 체인 (자동, runner 경유)</h3>
+<p>runner.py 가 FlexPepDock 결과에 자동 적용 (<code>runner.py:190,1123</code>, <code>scoring_pipeline.py:42</code>):</p>
+<pre><code class="language-python">from pyrosetta_flow.scoring_pipeline import _apply_alternative_scoring
+candidates = _apply_alternative_scoring(candidates, iter_dir, iteration, bo_optimizer)
+# 각 cand.extra_scores 에 half_life_h, admet_score, gnina_*, ecr_score,
+# pareto_rank, crowding_distance 채워짐
+</code></pre>
+<h3 id="cheap-objectives">cheap objectives 단독</h3>
+<pre><code class="language-python">from pyrosetta_flow.multiobjective import cheap_objectives, enrich_candidates
+obj = cheap_objectives(&quot;AGCKNFFWKTFTSC&quot;)          # half_life_h, admet_score, stability_norm ...
+enrich_candidates(cands)                            # cand dict 에 stability/druggability 매핑 주입
+</code></pre>
+<h3 id="nsga-ii-pareto">NSGA-II Pareto 랭킹 단독</h3>
+<pre><code class="language-python">from pyrosetta_flow.pareto_ranking import pareto_rank_candidates, select_from_pareto_front
+ranked = pareto_rank_candidates(cands, clash_threshold=10.0)  # pareto_rank, crowding_distance 부여
+best = select_from_pareto_front(ranked, n=5)                  # front-0 우선, crowding 내림차순
+</code></pre>
+<h3 id="gnina-ecr">GNINA + ECR 단독</h3>
+<pre><code class="language-python">from pyrosetta_flow.gnina_rescoring import batch_gnina_rescore, exponential_rank_consensus
+scores = batch_gnina_rescore(pdb_paths, max_workers=4)        # 바이너리 없으면 dry-run mock
+consensus = exponential_rank_consensus(cands, score_keys=[&quot;ddg&quot;,&quot;gnina_cnn_score&quot;,...])
+</code></pre>
+<h3 id="ui">스칼라 점수 (UI 정렬)</h3>
+<pre><code class="language-python">from pyrosetta_flow.multiobjective import multiobjective_scalar, ObjectiveWeights
+s = multiobjective_scalar(cand, ObjectiveWeights(ddg=0.40, selectivity=0.25,
+                                                  stability=0.20, admet=0.15))
+</code></pre>
+<h3 id="top-k-config-gated">선택성 (top-K, 비쌈, config-gated)</h3>
+<p><code>config.enable_selectivity=True</code> + <code>config.selectivity_top_k</code> 설정 시 runner 가 top-K 에 자동 호출 (<code>runner.py:1414-1445</code>). pepADMET 독성은 <code>SST_DISABLE_PEPADMET_TOX=1</code> 로 비활성 가능 (<code>scoring_pipeline.py:104-105</code>).</p>
+<hr />
+<h2 id="7">⑦ 필요한 이유</h2>
+<ul>
+<li><strong>단일 점수의 한계 극복</strong>: SSTR2 방사성의약품 후보는 결합·반감기·선택성·안전성이 동시 최적일 수 없다(상충). 가중합 단일 랭킹은 가중치 선택자의 주관에 결과가 종속되므로, Pareto front 로 객관적 trade-off 집합을 확보해야 한다 (<code>pareto_ranking.py:3-11</code>).</li>
+<li><strong>계산 비용 통제</strong>: 실제 PyRosetta off-target 도킹은 후보당 수분이 들어 전수 적용이 불가능하다. cost-tiered 구조로 저비용 surrogate 가 전수 1차 필터, 비싼 도킹은 top-K 에만 적용해야 처리량을 확보한다 (<code>multiobjective.py:11-13</code>).</li>
+<li><strong>이질적 채점기 통합</strong>: ddG(REU)·GNINA(CNN 확률)·Vina(kcal)는 스케일이 달라 직접 합산이 불가능하다. ECR 순위 합의가 스케일 불변 통합을 제공한다 (<code>gnina_rescoring.py:333-337</code>).</li>
+<li><strong>환각 차단 / 정직성</strong>: AI 발굴 파이프라인의 신뢰성은 "모르는 것을 아는 척하지 않음"에 달려있다. surrogate 면책 명시, fail-closed 독성 게이트, home-advantage baseline 보정이 가짜 점수의 의사결정 오염을 막는다 (<code>multiobjective.py:15-18,209,436-447</code>).</li>
+<li><strong>선택성 우선 목표</strong>: SSTR1/3/4/5 대비 SSTR2 선택성은 off-target 부작용 회피의 핵심이다. delta_margin(home-advantage 보정) 이 native 대비 진짜 선택성 신호를 제공한다 (<code>multiobjective.py:447-448</code>).</li>
+</ul>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<table>
+<thead>
+<tr>
+<th>주장</th>
+<th>인용</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4목적 정의(ddg↓/half_life↑/selectivity↑/admet↑)</td>
+<td><code>multiobjective.py:5-9</code></td>
+</tr>
+<tr>
+<td>surrogate vs 실측 honest disclaimer</td>
+<td><code>multiobjective.py:15-18</code></td>
+</tr>
+<tr>
+<td>cost-tiered 2계층 구조</td>
+<td><code>multiobjective.py:11-13</code></td>
+</tr>
+<tr>
+<td>admet_reasonableness 가중치(0.35/0.30/0.15/0.20)</td>
+<td><code>multiobjective.py:89</code></td>
+</tr>
+<tr>
+<td>cheap_objectives 반감기 앙상블+폴백</td>
+<td><code>multiobjective.py:111-129</code></td>
+</tr>
+<tr>
+<td>SS bond pI 제외 처리</td>
+<td><code>multiobjective.py:139-140</code></td>
+</tr>
+<tr>
+<td>독성 페널티 상수(0.4 / ±5.0 / 200.0)</td>
+<td><code>multiobjective.py:163-168</code></td>
+</tr>
+<tr>
+<td>binary is_toxic 비변별 → hc50 게이트</td>
+<td><code>multiobjective.py:211-219</code></td>
+</tr>
+<tr>
+<td>hc50 home-advantage 페널티</td>
+<td><code>multiobjective.py:232-241</code></td>
+</tr>
+<tr>
+<td>VR-A2 선형 폴백 hc50 skip</td>
+<td><code>multiobjective.py:225-228</code></td>
+</tr>
+<tr>
+<td>fail-closed(available=False 무처리)</td>
+<td><code>multiobjective.py:209,217</code></td>
+</tr>
+<tr>
+<td>ObjectiveWeights 값(0.40/0.25/0.20/0.15)</td>
+<td><code>multiobjective.py:273-278</code></td>
+</tr>
+<tr>
+<td>multiobjective_scalar 정규화·선형합</td>
+<td><code>multiobjective.py:293-305</code></td>
+</tr>
+<tr>
+<td>select_topk_for_selectivity clash 게이트</td>
+<td><code>multiobjective.py:308-323</code></td>
+</tr>
+<tr>
+<td>screen_selectivity 병렬 도킹</td>
+<td><code>multiobjective.py:401-425</code></td>
+</tr>
+<tr>
+<td>selectivity_margin 정의</td>
+<td><code>multiobjective.py:434-435</code></td>
+</tr>
+<tr>
+<td>delta_margin home-advantage 보정</td>
+<td><code>multiobjective.py:436-448</code></td>
+</tr>
+<tr>
+<td>NSGA-II 가중합 대체</td>
+<td><code>pareto_ranking.py:3-4</code></td>
+</tr>
+<tr>
+<td>4목적 최소화 변환</td>
+<td><code>pareto_ranking.py:35-53</code></td>
+</tr>
+<tr>
+<td>제약(hard_violations/clash)</td>
+<td><code>pareto_ranking.py:56-77</code></td>
+</tr>
+<tr>
+<td>infeasible relegation</td>
+<td><code>pareto_ranking.py:80-117</code></td>
+</tr>
+<tr>
+<td>비지배 정렬+crowding</td>
+<td><code>pareto_ranking.py:169-188</code></td>
+</tr>
+<tr>
+<td>select_from_pareto_front 정렬키</td>
+<td><code>pareto_ranking.py:224-231</code></td>
+</tr>
+<tr>
+<td>GNINA dry-run mock 동작</td>
+<td><code>gnina_rescoring.py:7-9,30,45-47,205-210</code></td>
+</tr>
+<tr>
+<td>dry-run mock 값</td>
+<td><code>gnina_rescoring.py:32-37</code></td>
+</tr>
+<tr>
+<td>GNINA 바이너리 부재(환경 실측)</td>
+<td><code>which gnina</code> → not found</td>
+</tr>
+<tr>
+<td>ECR 공식</td>
+<td><code>gnina_rescoring.py:333-337,388</code></td>
+</tr>
+<tr>
+<td>ECR NaN→inf 처리</td>
+<td><code>gnina_rescoring.py:374-375</code></td>
+</tr>
+<tr>
+<td>ECR 기본 score_keys</td>
+<td><code>gnina_rescoring.py:359-360</code></td>
+</tr>
+<tr>
+<td>파이프라인 5단계 체인</td>
+<td><code>scoring_pipeline.py:42-281</code></td>
+</tr>
+<tr>
+<td>ECR 호출 시 ddg 추가(4항)</td>
+<td><code>scoring_pipeline.py:177</code></td>
+</tr>
+<tr>
+<td>Pareto diversity=0.0 고정</td>
+<td><code>scoring_pipeline.py:218</code></td>
+</tr>
+<tr>
+<td>Pareto 입력 폴백(clash proxy/ECR)</td>
+<td><code>scoring_pipeline.py:204-212</code></td>
+</tr>
+<tr>
+<td>pepADMET env 비활성 플래그</td>
+<td><code>scoring_pipeline.py:104-105</code></td>
+</tr>
+<tr>
+<td>runner scalar UI 보조 호출</td>
+<td><code>runner.py:64-73</code></td>
+</tr>
+<tr>
+<td>runner 선택성 top-K config-gated</td>
+<td><code>runner.py:1414-1445</code></td>
+</tr>
+</tbody>
+</table></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

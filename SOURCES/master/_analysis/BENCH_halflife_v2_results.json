@@ -1,0 +1,390 @@
+{
+  "source": "BENCH_halflife_v2.md",
+  "n": 32,
+  "all_raw": [
+    0.396,
+    32
+  ],
+  "all_meta": [
+    0.662,
+    32
+  ],
+  "L_raw": [
+    0.128,
+    23
+  ],
+  "L_meta": [
+    0.344,
+    23
+  ],
+  "D_raw": [
+    0.436,
+    9
+  ],
+  "D_meta": [
+    0.277,
+    9
+  ],
+  "n_L": 23,
+  "n_D": 9,
+  "rows": [
+    {
+      "name": "Somatostatin-14",
+      "sequence": "AGCKNFFWKTFTSC",
+      "lit": 0.033,
+      "raw": 0.042,
+      "meta": 0.076,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://www.ncbi.nlm.nih.gov/books/NBK538327/"
+    },
+    {
+      "name": "Glucagon",
+      "sequence": "HSQGTFTSDYSKYLDSRRAQDFVQWLMNT",
+      "lit": 0.17,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://pubmed.ncbi.nlm.nih.gov/8157042/"
+    },
+    {
+      "name": "Oxytocin",
+      "sequence": "CYIQNCPLG",
+      "lit": 0.067,
+      "raw": 0.11,
+      "meta": 0.198,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://en.wikipedia.org/wiki/Oxytocin"
+    },
+    {
+      "name": "Vasopressin (ADH)",
+      "sequence": "CYFQNCPRG",
+      "lit": 0.25,
+      "raw": 0.069,
+      "meta": 0.125,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://www.peptidejournal.org/reference/peptide-half-life-chart-quick-reference"
+    },
+    {
+      "name": "ANP",
+      "sequence": "SLRRSSCFGGRMDRIGAQSGLGCNSFRY",
+      "lit": 0.05,
+      "raw": 0.026,
+      "meta": 0.048,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://academic.oup.com/cardiovascres/article/51/3/442/367519"
+    },
+    {
+      "name": "BNP",
+      "sequence": "SPKMVQGSGCFGRKMDRISSSSGLGCKVLRRH",
+      "lit": 0.33,
+      "raw": 0.026,
+      "meta": 0.047,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC9312360/"
+    },
+    {
+      "name": "Nesiritide (recombinant BNP)",
+      "sequence": "SPKMVQGSGCFGRKMDRISSSSGLGCKVLRRH",
+      "lit": 0.3,
+      "raw": 0.026,
+      "meta": 0.047,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://www.accessdata.fda.gov/drugsatfda_docs/label/2009/020920s023lbl.pdf"
+    },
+    {
+      "name": "Secretin",
+      "sequence": "HSDGTFTSELSRLREGARLQRLLQGLV",
+      "lit": 0.067,
+      "raw": 0.022,
+      "meta": 0.022,
+      "group": "L",
+      "mods": [],
+      "src": "https://pubmed.ncbi.nlm.nih.gov/830238/"
+    },
+    {
+      "name": "VIP",
+      "sequence": "HSDAVFTDNYTRLRKQMAVKKYLNSILN",
+      "lit": 0.025,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://pubmed.ncbi.nlm.nih.gov/730072/"
+    },
+    {
+      "name": "GLP-1 (7-37)",
+      "sequence": "HAEGTFTSDVSSYLEGQAAKEFIAWLVKGR",
+      "lit": 0.033,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12052016/"
+    },
+    {
+      "name": "GIP (native)",
+      "sequence": "YAEGTFISDYSIAMDKIHQQDFVNWLLAQK",
+      "lit": 0.083,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.nature.com/articles/s41387-025-00397-4"
+    },
+    {
+      "name": "PYY(3-36)",
+      "sequence": "IKPEAPGEDASPEELNRYYASLRHYLNLVTRQRY",
+      "lit": 0.06,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4552532/"
+    },
+    {
+      "name": "Ghrelin (acylated)",
+      "sequence": "GSSFLSPEHQRVQQRKESKKPPAKLQPR",
+      "lit": 0.183,
+      "raw": 0.02,
+      "meta": 37.57,
+      "group": "L",
+      "mods": [
+        "fatty_acid"
+      ],
+      "src": "https://eje.bioscientifica.com/view/journals/eje/168/6/821.xml"
+    },
+    {
+      "name": "Substance P",
+      "sequence": "RPKPQQFFGLM",
+      "lit": 0.017,
+      "raw": 0.024,
+      "meta": 0.024,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.peptidejournal.org/reference/peptide-half-life-chart-quick-reference"
+    },
+    {
+      "name": "Bradykinin",
+      "sequence": "RPPGFSPFR",
+      "lit": 0.0028,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.sciencedirect.com/science/article/abs/pii/000629529190106F"
+    },
+    {
+      "name": "Angiotensin II",
+      "sequence": "DRVYIHPF",
+      "lit": 0.0083,
+      "raw": 0.027,
+      "meta": 0.027,
+      "group": "L",
+      "mods": [],
+      "src": "https://pubmed.ncbi.nlm.nih.gov/9231819/"
+    },
+    {
+      "name": "Neurotensin",
+      "sequence": "QLYENKPRRPYIL",
+      "lit": 0.025,
+      "raw": 0.026,
+      "meta": 0.026,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.sciencedirect.com/science/article/pii/0196978186900549"
+    },
+    {
+      "name": "Met-enkephalin",
+      "sequence": "YGGFM",
+      "lit": 0.017,
+      "raw": 0.033,
+      "meta": 0.033,
+      "group": "L",
+      "mods": [],
+      "src": "https://en.wikipedia.org/wiki/Met-enkephalin"
+    },
+    {
+      "name": "Leu-enkephalin",
+      "sequence": "YGGFL",
+      "lit": 0.017,
+      "raw": 0.026,
+      "meta": 0.026,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8308721/"
+    },
+    {
+      "name": "GnRH (native)",
+      "sequence": "QHWSYGLRPG",
+      "lit": 0.05,
+      "raw": 0.041,
+      "meta": 0.041,
+      "group": "L",
+      "mods": [],
+      "src": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5461264/"
+    },
+    {
+      "name": "Calcitonin (salmon)",
+      "sequence": "CSNLSTCVLGKLSQELHKLQTYPRTNTGSGTP",
+      "lit": 1.0,
+      "raw": 0.071,
+      "meta": 0.127,
+      "group": "L",
+      "mods": [
+        "cyclization"
+      ],
+      "src": "https://www.drugs.com/pro/calcitonin-salmon-injection.html"
+    },
+    {
+      "name": "Exenatide",
+      "sequence": "HGEGTFTSDLSKQMEEEAVRLFIEWLKNGGPSSGAPPPS",
+      "lit": 2.4,
+      "raw": 0.027,
+      "meta": 0.027,
+      "group": "L",
+      "mods": [],
+      "src": "https://pubchem.ncbi.nlm.nih.gov/compound/Exenatide"
+    },
+    {
+      "name": "Sermorelin",
+      "sequence": "YADAIFTNSYRKVLGQLSARKLLQDIMSRQQGESNQER",
+      "lit": 0.183,
+      "raw": 0.02,
+      "meta": 0.02,
+      "group": "L",
+      "mods": [],
+      "src": "https://www.peptidejournal.org/reference/peptide-half-life-chart-quick-reference"
+    },
+    {
+      "name": "GHRP-6",
+      "sequence": "HWAWFK",
+      "lit": 0.42,
+      "raw": 0.02,
+      "meta": 0.607,
+      "group": "D",
+      "mods": [
+        "d_amino_acid"
+      ],
+      "src": "https://www.peptidejournal.org/reference/peptide-half-life-chart-quick-reference"
+    },
+    {
+      "name": "Octreotide",
+      "sequence": "FCFWKTCT",
+      "lit": 1.7,
+      "raw": 0.039,
+      "meta": 2.469,
+      "group": "D",
+      "mods": [
+        "d_amino_acid",
+        "cyclization"
+      ],
+      "src": "https://www.accessdata.fda.gov/drugsatfda_docs/label/2005/019667s050lbl.pdf"
+    },
+    {
+      "name": "Lanreotide",
+      "sequence": "NCYWKVCT",
+      "lit": 1.5,
+      "raw": 0.064,
+      "meta": 4.009,
+      "group": "D",
+      "mods": [
+        "d_amino_acid",
+        "cyclization"
+      ],
+      "src": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3269320/"
+    },
+    {
+      "name": "Vapreotide",
+      "sequence": "FCYWKVCW",
+      "lit": 0.5,
+      "raw": 0.031,
+      "meta": 1.982,
+      "group": "D",
+      "mods": [
+        "d_amino_acid",
+        "cyclization"
+      ],
+      "src": "https://www.sciencedirect.com/topics/medicine-and-dentistry/vapreotide"
+    },
+    {
+      "name": "Leuprolide",
+      "sequence": "QHWSYLLRP",
+      "lit": 3.0,
+      "raw": 0.039,
+      "meta": 1.349,
+      "group": "D",
+      "mods": [
+        "d_amino_acid"
+      ],
+      "src": "https://en.wikipedia.org/wiki/Leuprorelin"
+    },
+    {
+      "name": "Buserelin",
+      "sequence": "QHWSYSLRP",
+      "lit": 1.25,
+      "raw": 0.04,
+      "meta": 1.417,
+      "group": "D",
+      "mods": [
+        "d_amino_acid"
+      ],
+      "src": "https://en.wikipedia.org/wiki/Buserelin"
+    },
+    {
+      "name": "Triptorelin",
+      "sequence": "QHWSYWLRPG",
+      "lit": 2.8,
+      "raw": 0.035,
+      "meta": 1.24,
+      "group": "D",
+      "mods": [
+        "d_amino_acid"
+      ],
+      "src": "https://pubmed.ncbi.nlm.nih.gov/9354307/"
+    },
+    {
+      "name": "Bivalirudin",
+      "sequence": "FPRPGGGGNGDFEEIPEEYL",
+      "lit": 0.42,
+      "raw": 0.034,
+      "meta": 1.178,
+      "group": "D",
+      "mods": [
+        "d_amino_acid"
+      ],
+      "src": "https://en.wikipedia.org/wiki/Bivalirudin"
+    },
+    {
+      "name": "DOTATATE",
+      "sequence": "FCYWKTCT",
+      "lit": 0.5,
+      "raw": 0.04,
+      "meta": 2.515,
+      "group": "D",
+      "mods": [
+        "d_amino_acid",
+        "cyclization"
+      ],
+      "src": "https://jnm.snmjournals.org/content/59/11/1699"
+    }
+  ]
+}

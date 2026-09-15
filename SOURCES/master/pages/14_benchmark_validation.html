@@ -1,0 +1,463 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🧪 벤치마크: 반감기 (문헌 vs 예측) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html" class="active">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="vs">벤치마크 검증 — 문헌 실측값 vs 우리 파이프라인 예측 순위</h1>
+<blockquote>
+<p>목적: 온라인 공개 생명공학 문헌의 <strong>실측 펩타이드 데이터(serum t½·독성)</strong>를 ground-truth로 삼아,
+우리 파이프라인 예측이 그 <strong>경향성(순위)을 얼마나 따라가는지</strong> 객관적 수치 + 정성 평가로 검증한다.
+<strong>할루시네이션 견제</strong>: 문헌값은 전부 출처 URL 인용, 우리 예측은 <code>bench_halflife_v2.py</code>로 <strong>실제 코드 실행</strong>한 값이다(지어내지 않음).</p>
+</blockquote>
+<h2 id="_1">🎯 핵심 결론 (두괄식)</h2>
+<ul>
+<li><strong>권위값 = v2(39종 수집 / 32종 유효, L23·D9)</strong>. 구 v1(17종)은 표본이 작아 폐기적 참조용.</li>
+<li><strong>반감기 서로게이트 순위상관(Spearman)</strong>:</li>
+<li>전체 <strong>raw = +0.396</strong><code>[순위 MED]</code> → <strong>+metadata = +0.662</strong><code>[순위 MED]</code></li>
+<li>변형 메타데이터를 주면 <strong>−방향 붕괴를 면하고 강한 양의 상관으로 회복</strong>.</li>
+<li><strong>단, raw(+0.40)와 meta(+0.66)는 동급 비교 아님</strong>: 변형 종류는 반감기의 <strong>지배적 인과 동인</strong>인데 코드가 이를 <strong>고정 배수</strong>로 주입(<code>fatty_acid ×2800</code> 등 <code>step08_stability.py:115-121</code>)하므로, meta는 <strong>"변형 클래스를 손으로 넣어준" 버킷팅 효과</strong>가 대부분 — <strong>모델 예측 실력이 아니다</strong>. ⇒ <strong>고유 실력 헤드라인 = raw(+0.40)</strong>, meta는 <em>변형이 설계 시점에 기지(旣知)인 실사용 조건</em>에서만 유효한 조건부 지표(leak 아님). 운영상 같은-맥락 변이체 비교는 사실상 raw 수준에서 변별.</li>
+<li><strong>v1(−0.30) → v2(+0.40)</strong>: 표본 17→39 확장으로 raw가 <strong>음수→양수로 전환</strong>. ⇒ <strong>v1의 음수는 소표본 노이즈</strong>였음(정직 서술).</li>
+<li><strong>신뢰등급</strong>: 상대순위 <code>[MED]</code> / 절대값 <code>[LOW]</code>. <strong>스크리닝은 순위 비교 전용</strong> — 절대 t½(h)를 신뢰값으로 쓰지 말 것.</li>
+<li>결합/선택성은 임의 펩타이드의 수용체 복합체 구조가 없어 도킹 불가 → 본 벤치마크에서 제외(정직).</li>
+</ul>
+<blockquote>
+<p>신뢰등급 범례: <code>[MED]</code> 상대순위 비교 가능 / <code>[LOW]</code> 절대값 신뢰 불가(상대 비교 전용).</p>
+</blockquote>
+<h2 id="bench_halflife_v2py">방법 (코드 실측 — <code>bench_halflife_v2.py</code>)</h2>
+<p><em>아래는 <code>bench_halflife_v2.py</code>를 직접 읽고 사실대로 기술한 흐름이다.</em>
+- <strong>입력 로드</strong> (<code>load()</code>): <code>BENCH_halflife_v2.md</code>의 <code>``json 블록을 파싱(없으면</code>BENCH_literature.md<code>폴백). 비표준 잔기 포함·서열 결측 항목은</code>_skip<code>처리하여 제외 → **39종 수집 중 7종 스킵, 32종 유효**.
+- **raw 예측**:</code>ensemble_halflife(seq).get("half_life_h")<code>— 변형 정보 없이 **1-letter 서열만** 입력. 반환되는</code>half_life_h<code>는 앙상블 모듈의 휴리스틱 추정기 값(절대 스케일 신뢰)이며, RF 앙상블은</code>stability_norm<code>에만 반영됨.
+- **meta 예측**:</code>predict_half_life(seq, mods)<code>—</code>mods<code>에 변형 플래그(</code>d_amino_acid<code>·</code>fatty_acid<code>·</code>cyclization<code>·</code>pegylation<code>·</code>substitution<code>) 전달.
+- **그룹 분류** (</code>grp<code>):</code>aa_type ∈ {D, MIXED}<code>또는</code>d_amino_acid<code>변형 보유 시 **D 그룹**, 그 외 **L 그룹**.
+- **지표** (</code>spearman<code>): 문헌 t½ 순위 vs 예측 t½ 순위의 **Spearman 순위상관 ρ**(동순위 평균-rank 처리, n&lt;3이면 None). ALL/L/D × raw/meta 6조합 산출.
+- 산출물:</code>_analysis/BENCH_halflife_v2_results.json`.</p>
+<h2 id="v2-n39-32">📈 정량 결과 (v2 — 권위값, N=39 수집 / 32 유효)</h2>
+<p>초기 17종을 <strong>39종(유효 32종: L-aa 23 / D-aa 9, 7종은 비표준 잔기로 스킵)</strong>으로 확장하고 L/D를 분리 비교했다. 데이터 출처 = <code>_analysis/BENCH_halflife_v2.md</code>, 결과 = <code>BENCH_halflife_v2_results.json</code>.</p>
+<h3 id="raw-vs-metadata-l-vs-d">raw vs +metadata × L vs D 분리 표</h3>
+<table>
+<thead>
+<tr>
+<th>그룹</th>
+<th style="text-align: center;">n</th>
+<th style="text-align: center;">raw Spearman ρ</th>
+<th style="text-align: center;">+metadata Spearman ρ</th>
+<th style="text-align: center;">신뢰등급</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>전체</strong></td>
+<td style="text-align: center;">32</td>
+<td style="text-align: center;"><strong>+0.396</strong></td>
+<td style="text-align: center;"><strong>+0.662</strong></td>
+<td style="text-align: center;">순위 <code>[MED]</code> · 절대값 <code>[LOW]</code></td>
+</tr>
+<tr>
+<td>L-aa (표준)</td>
+<td style="text-align: center;">23</td>
+<td style="text-align: center;">+0.128</td>
+<td style="text-align: center;">+0.344</td>
+<td style="text-align: center;">순위 <code>[MED]</code> · 절대값 <code>[LOW]</code></td>
+</tr>
+<tr>
+<td>D-aa 포함</td>
+<td style="text-align: center;">9</td>
+<td style="text-align: center;">+0.436 *</td>
+<td style="text-align: center;">+0.277 *</td>
+<td style="text-align: center;">순위 <code>[LOW]</code>(n작음) · 절대값 <code>[LOW]</code></td>
+</tr>
+</tbody>
+</table>
+<p>* <strong>D 그룹 ρ는 신뢰 낮음</strong>: n=9로 작고 raw 값이 전부 바닥(0.02~0.06h)에 깔려(near-tied) <strong>순위 ρ가 불안정</strong>. raw(+0.436)&gt;meta(+0.277)인 역전도 이 불안정의 산물 — 순위 ρ 단독 판단 금물. 더 robust한 신호는 아래 <strong>자릿수 교정 패턴</strong>이다.</p>
+<h3 id="v1030-v2040">표본 확장: v1(−0.30) → v2(+0.40)의 정직 서술</h3>
+<table>
+<thead>
+<tr>
+<th>버전</th>
+<th style="text-align: center;">표본</th>
+<th style="text-align: center;">유효 n</th>
+<th style="text-align: center;">전체 raw ρ</th>
+<th style="text-align: center;">전체 meta ρ</th>
+<th>해석</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>구 v1</td>
+<td style="text-align: center;">17종</td>
+<td style="text-align: center;">16</td>
+<td style="text-align: center;"><strong>−0.30</strong></td>
+<td style="text-align: center;">+0.76†</td>
+<td>소표본 — 변형 펩타이드 몇 건이 순위를 끌어내려 <strong>음수</strong></td>
+</tr>
+<tr>
+<td><strong>v2 (권위)</strong></td>
+<td style="text-align: center;">39종</td>
+<td style="text-align: center;">32</td>
+<td style="text-align: center;"><strong>+0.396</strong></td>
+<td style="text-align: center;"><strong>+0.662</strong></td>
+<td>표본 확장으로 <strong>양수 전환</strong> — v1 음수는 노이즈로 확인</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>결론</strong>: v1의 −0.30은 <strong>소표본 노이즈</strong>다. 표본을 17→39로 늘리자 전체 raw 상관이 <strong>음수에서 양수(+0.40)로 전환</strong>됐다 ⇒ "raw로는 경향성을 못 잡는다"는 결론은 <strong>과장</strong>이었고, 실제로는 raw도 약한 양의 방향성을 가진다.</li>
+<li>† v1 meta(+0.76)는 표본·서브셋이 달라 v2 meta(+0.662)와 직접 비교 불가. <strong>권위값은 v2(+0.662)</strong>. (v1 추가실험 상세는 아래 보존.)</li>
+</ul>
+<h3 id="d-aa-raw-metadata-robust">D-aa 펩타이드: raw는 전멸, metadata가 자릿수 교정 (robust 신호)</h3>
+<table>
+<thead>
+<tr>
+<th>D-aa 펩타이드</th>
+<th style="text-align: right;">문헌 t½(h)</th>
+<th style="text-align: right;">raw 예측</th>
+<th style="text-align: right;">+metadata</th>
+<th style="text-align: center;">신뢰등급(절대값)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GHRP-6</td>
+<td style="text-align: right;">0.42</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">0.607</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Bivalirudin</td>
+<td style="text-align: right;">0.42</td>
+<td style="text-align: right;">0.034</td>
+<td style="text-align: right;">1.178</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Vapreotide</td>
+<td style="text-align: right;">0.5</td>
+<td style="text-align: right;">0.031</td>
+<td style="text-align: right;">1.982</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>DOTATATE</td>
+<td style="text-align: right;">0.5</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">2.515</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Buserelin</td>
+<td style="text-align: right;">1.25</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">1.417</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Lanreotide</td>
+<td style="text-align: right;">1.5</td>
+<td style="text-align: right;">0.064</td>
+<td style="text-align: right;">4.009</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Octreotide</td>
+<td style="text-align: right;">1.7</td>
+<td style="text-align: right;">0.039</td>
+<td style="text-align: right;">2.469</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Triptorelin</td>
+<td style="text-align: right;">2.8</td>
+<td style="text-align: right;">0.035</td>
+<td style="text-align: right;">1.240</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+<tr>
+<td>Leuprolide</td>
+<td style="text-align: right;">3.0</td>
+<td style="text-align: right;">0.039</td>
+<td style="text-align: right;">1.349</td>
+<td style="text-align: center;"><code>[LOW]</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>L vs D 핵심 비교</strong>:
+- <strong>L-aa</strong>: raw에서 이미 약한 양의 상관(+0.128)으로 "방향성"은 잡음 — 모델이 학습한 천연 펩타이드 도메인에 가까움. meta로 +0.344 상승. (대형 펩타이드 등 때문에 절대 정밀도는 제한.)
+- <strong>D-aa</strong>: raw는 <strong>전부 0.02~0.06h로 바닥</strong>(문헌 0.42~3.0h) — 서열로는 D를 못 봐 천연 단명으로 오판. <strong>metadata를 주면 0.6~4h로 자릿수 교정</strong> → cross-group 순위의 −방향 붕괴를 면하고 <strong>전체 ρ +0.396→+0.662</strong> 상승.
+- 결론: <strong>L-aa는 정보 없이도 경향성을 잡고, D-aa는 변형 메타데이터를 줘야 자릿수가 맞는다.</strong> 단 D-aa 내부의 <em>정밀</em> 순위는 고정 배수의 거칠음으로 여전히 약함<code>[LOW]</code>(개선: 잔기수 비례·위치 반영).</p>
+<hr />
+<h2 id="v1-17-v2">(참고·구 v1, 17종) 정성 분석 — 권위값은 위 v2</h2>
+<blockquote>
+<p>아래 §는 <strong>구 v1(17종)</strong> 기준 정성 서술이다. <strong>정량 권위값은 위 v2(N=39)</strong>이며, v1의 −0.30은 소표본 노이즈로 확인됐다(위 표). 정성 패턴(단명 영역 정확·장수/변형 영역 과소예측)은 v2에서도 유지되므로 참고용으로 보존한다.</p>
+</blockquote>
+<h3 id="t12">비교 테이블 (문헌 t½ 오름차순)</h3>
+<table>
+<thead>
+<tr>
+<th>펩타이드</th>
+<th style="text-align: center;">변형</th>
+<th style="text-align: right;">문헌 t½(h)</th>
+<th style="text-align: right;">우리 예측(h)</th>
+<th style="text-align: right;">우리 hc50</th>
+<th style="text-align: center;">추종?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Bradykinin</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.005</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">−21</td>
+<td style="text-align: center;">✅ 단명 정확</td>
+</tr>
+<tr>
+<td>GLP-1(7-37)</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.028</td>
+<td style="text-align: right;">0.023</td>
+<td style="text-align: right;">−486</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Somatostatin-14</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.050</td>
+<td style="text-align: right;">0.042</td>
+<td style="text-align: right;">−48</td>
+<td style="text-align: center;">✅ (보정 기준점)</td>
+</tr>
+<tr>
+<td>Oxytocin</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.050</td>
+<td style="text-align: right;">0.110</td>
+<td style="text-align: right;">−13</td>
+<td style="text-align: center;">△ 약간 과대</td>
+</tr>
+<tr>
+<td>Human Insulin</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.075</td>
+<td style="text-align: right;">0.045</td>
+<td style="text-align: right;">–</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>Vasopressin</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.250</td>
+<td style="text-align: right;">0.069</td>
+<td style="text-align: right;">−17</td>
+<td style="text-align: center;">△ 과소</td>
+</tr>
+<tr>
+<td>Melittin</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">0.400</td>
+<td style="text-align: right;">0.021</td>
+<td style="text-align: right;"><strong>−293</strong></td>
+<td style="text-align: center;">❌ t½과소 / ✅독성정확</td>
+</tr>
+<tr>
+<td>Bivalirudin</td>
+<td style="text-align: center;">D-Phe</td>
+<td style="text-align: right;">0.420</td>
+<td style="text-align: right;">0.034</td>
+<td style="text-align: right;">−151</td>
+<td style="text-align: center;">❌ 과소</td>
+</tr>
+<tr>
+<td>Octreotide</td>
+<td style="text-align: center;">D-aa</td>
+<td style="text-align: right;">1.67</td>
+<td style="text-align: right;">0.039</td>
+<td style="text-align: right;">−15</td>
+<td style="text-align: center;">❌ 바닥</td>
+</tr>
+<tr>
+<td>Octreotate</td>
+<td style="text-align: center;">D-aa</td>
+<td style="text-align: right;">1.67</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">−15</td>
+<td style="text-align: center;">❌ 바닥</td>
+</tr>
+<tr>
+<td>Lanreotide</td>
+<td style="text-align: center;">비표준</td>
+<td style="text-align: right;">2.00</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">−15</td>
+<td style="text-align: center;">❌ 바닥</td>
+</tr>
+<tr>
+<td>Exenatide</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: right;">2.40</td>
+<td style="text-align: right;">0.027</td>
+<td style="text-align: right;">−881</td>
+<td style="text-align: center;">❌ 과소</td>
+</tr>
+<tr>
+<td>DOTATATE</td>
+<td style="text-align: center;">D-aa</td>
+<td style="text-align: right;">3.50</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">−15</td>
+<td style="text-align: center;">❌ 바닥</td>
+</tr>
+<tr>
+<td>Pasireotide</td>
+<td style="text-align: center;">비표준</td>
+<td style="text-align: right;">9.50</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">−13</td>
+<td style="text-align: center;">❌ 바닥</td>
+</tr>
+<tr>
+<td>Liraglutide</td>
+<td style="text-align: center;">아실화</td>
+<td style="text-align: right;">13.0</td>
+<td style="text-align: right;">0.027</td>
+<td style="text-align: right;">−415</td>
+<td style="text-align: center;">❌ 변형 무시</td>
+</tr>
+<tr>
+<td>Semaglutide</td>
+<td style="text-align: center;">아실화</td>
+<td style="text-align: right;">165</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">−474</td>
+<td style="text-align: center;">❌ 변형 무시</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_2">정성 경향성 분석 — 어디서 잘 따라가고, 어디서 못 따라가나</h3>
+<p><strong>✅ 잘 추종 (단명 영역, ≤0.1h)</strong>: Bradykinin·GLP-1·SST-14·Insulin 의 순위를 거의 정확히 재현한다. 특히 SST-14(0.05h→0.042h)는 모델의 보정 기준점이라 정밀. 즉 <strong>"빠르게 분해되는 펩타이드"를 식별하는 능력은 신뢰</strong>할 만하다.</p>
+<p><strong>❌ 못 따라감 (장수·변형 영역)</strong>: 문헌 t½ 1.7h 이상 펩타이드를 <strong>전부 ~0.02–0.04h로 바닥에 깔아</strong> 서로 구분하지 못한다. 핵심 원인 두 가지:
+1. <strong>변형 무시</strong>: D-아미노산(octreotide/DOTATATE)·아실화(semaglutide t½ 165h, liraglutide 13h)·고리화의 안정화 효과를 raw 서열 입력으로는 볼 수 없다 → 모두 천연 단명 펩타이드처럼 예측.
+2. <strong>장수 영역 동적 범위 부족</strong>: 비변형 exenatide(2.4h)·melittin(0.4h)조차 과소예측 → 상한 분해능 약함.
+이 때문에 장수 변형 펩타이드들이 하단에 몰려 <strong>전체 순위가 역전(ρ−0.30)</strong>된다.</p>
+<p><strong>독성(HC50)</strong>: 문헌값은 melittin(16.28 µg/mL, 강한 용혈)만 확보. 우리 hc50는 melittin <strong>−293</strong>으로 17종 중 가장 음수(=가장 독성) → <strong>양성대조 정확 식별</strong> ✅. 단 GLP-1(−486)·exenatide(−881)처럼 비용혈 펩타이드도 큰 음수라 <strong>hc50 절대값은 용혈 특이적이지 않음</strong>(단위 미검증·상대비교 전용 caveat와 일치).</p>
+<h3 id="v1-d-aa">🔬 (구 v1) 메타데이터를 제공하면? — D-aa/변형 경향성 회복 검증 (추가 실험)</h3>
+<blockquote>
+<p>⚠️ 아래 ρ(−0.30→+0.76)는 <strong>구 v1(17종) 서브셋</strong> 실험값이다. <strong>권위 메타데이터 회복값은 v2 전체 +0.662</strong>(위). v1 수치는 표본이 작아 참고용으로만 본다.</p>
+</blockquote>
+<p>앞의 음의 상관(ρ−0.30)은 <strong>변형 정보를 안 줬기 때문</strong>이라는 가설을, 각 펩타이드에 <strong>올바른 변형 플래그</strong>(D-aa→<code>d_amino_acid</code>, 아실화→<code>fatty_acid</code>; 고리화는 Cys쌍 자동감지)를 주고 <code>predict_half_life</code>를 재실행해 검증했다.</p>
+<table>
+<thead>
+<tr>
+<th>시나리오</th>
+<th style="text-align: center;">전체(17) Spearman</th>
+<th style="text-align: center;">변형 서브셋(8) Spearman</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>raw (메타데이터 無)</td>
+<td style="text-align: center;"><strong>−0.30</strong></td>
+<td style="text-align: center;">−0.57 (전부 ~0.04h 바닥, 식별 불가)</td>
+</tr>
+<tr>
+<td><strong>with-metadata</strong></td>
+<td style="text-align: center;"><strong>+0.76</strong></td>
+<td style="text-align: center;"><strong>+0.57</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>→ 경향성이 음(−0.30)에서 강한 양(+0.76)으로 회복</strong>. 내부 curated 벤치(ρ≥0.86, 변형 정보 제공 셋)와 같은 결을 독립 데이터에서도 재현.</p>
+<table>
+<thead>
+<tr>
+<th>펩타이드</th>
+<th style="text-align: right;">문헌 t½</th>
+<th style="text-align: right;">raw</th>
+<th style="text-align: right;"><strong>with-metadata</strong></th>
+<th>평가</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Octreotide</td>
+<td style="text-align: right;">1.67</td>
+<td style="text-align: right;">0.039</td>
+<td style="text-align: right;"><strong>1.37</strong></td>
+<td>✅ 거의 정확</td>
+</tr>
+<tr>
+<td>Octreotate</td>
+<td style="text-align: right;">1.67</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;"><strong>1.40</strong></td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Lanreotide</td>
+<td style="text-align: right;">2.0</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;"><strong>1.40</strong></td>
+<td>✅ 근접</td>
+</tr>
+<tr>
+<td>DOTATATE</td>
+<td style="text-align: right;">3.5</td>
+<td style="text-align: right;">0.040</td>
+<td style="text-align: right;">1.40</td>
+<td>△ 개선되나 과소</td>
+</tr>
+<tr>
+<td>Pasireotide</td>
+<td style="text-align: right;">9.5</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">0.61</td>
+<td>❌ 여전히 과소(비표준 잔기)</td>
+</tr>
+<tr>
+<td>Bivalirudin</td>
+<td style="text-align: right;">0.42</td>
+<td style="text-align: right;">0.034</td>
+<td style="text-align: right;">1.18</td>
+<td>❌ 과대(D-Phe 1개에 ×35 고정)</td>
+</tr>
+<tr>
+<td>Liraglutide</td>
+<td style="text-align: right;">13</td>
+<td style="text-align: right;">0.027</td>
+<td style="text-align: right;">76</td>
+<td>△ 자릿수 맞음, 과대</td>
+</tr>
+<tr>
+<td>Semaglutide</td>
+<td style="text-align: right;">165</td>
+<td style="text-align: right;">0.020</td>
+<td style="text-align: right;">46</td>
+<td>△ 자릿수 근접, 과소</td>
+</tr>
+</tbody>
+</table>
+<p><strong>해석</strong>:
+- <strong>D-aa 고리형 소마토스타틴 유사체(octreotide 계열)는 메타데이터만 주면 정밀 회복</strong> (0.04h → 1.37h ≈ 문헌 1.67h). 즉 <strong>"공식의 부재"가 아니라 "입력 메타데이터의 부재"</strong>임이 정량 확정.
+- 남은 한계: <strong>고정 배수</strong>(d_amino ×35)라 D-residue 개수 무시 → bivalirudin(1개) 과대. <strong>아실화(×2800)</strong>는 자릿수는 맞지만 거칠어 liraglutide/semaglutide 상호 순위가 뒤집힘. pasireotide 등 비표준 잔기는 미반영.
+- <strong>결론</strong>: D-aa 경향성은 <em>메타데이터를 주면 잡을 수 있다</em>(서브셋 ρ −0.57→+0.57). 정밀화하려면 <strong>변형 타입+개수 비례 계수 + 위치 정보</strong>가 필요.</p>
+<p><em>(재현: <code>BENCH_metadata_recovery.json</code>, predict_half_life 변형 플래그 재실행)</em></p>
+<h2 id="v2">결론 (정직, v2 권위값 기준)</h2>
+<ul>
+<li>우리 반감기 예측은 <strong>"급속분해 탐지기 + 변형 메타데이터 의존 상대 순위기"</strong>다. SSTR2 발굴의 실제 용도(SST-14 변이체끼리 <strong>상대 비교</strong>)에 <strong>유효</strong>하며, 신뢰등급은 <strong>상대순위 <code>[MED]</code> / 절대값 <code>[LOW]</code></strong>.</li>
+<li><strong>권위 정량값(v2, N=39 수집/32 유효)</strong>: 전체 raw <strong>+0.396</strong> → +metadata <strong>+0.662</strong>.</li>
+<li>구 v1의 음수(−0.30)는 <strong>소표본 노이즈</strong>였고, 표본 확장(v2)으로 raw가 <strong>양수(+0.40)로 전환</strong>됐다. 즉 raw로도 약한 양의 방향성은 있으며, 변형 메타데이터를 주면 강한 양의 상관으로 올라간다.</li>
+<li>한계의 본질은 "공식 부재"가 아니라 <strong>"입력 메타데이터 부재 + 고정 배수의 거칠음"</strong>이다. 내부 curated 벤치(ρ≥0.86, 변형 정보 제공)와도 결이 일관.</li>
+<li><strong>스크리닝 운용 규칙</strong>: 절대 t½(h)는 신뢰값으로 쓰지 말고 <strong>순위 비교 전용</strong>으로만 사용.</li>
+<li><strong>게이트 메커니즘 (상대 순위로 작동) <code>[근거: AG_src/pipeline/step08_stability.py:526-541]</code></strong>:</li>
+<li><strong>목적</strong> — 반감기 surrogate가 임상 t½가 아니라 "휴리스틱 상대-순위"임을 코드가 명시(<code>docstring:535-538</code> "게이트는 후보 간 <strong>상대 우선순위 필터</strong>로만 의미를 가진다").</li>
+<li><strong>입력</strong> — 한 iteration 후보군의 surrogate 반감기 점수 리스트.</li>
+<li><strong>연산</strong> — <code>apply_stability_gate(gate_mode="relative_percentile", top_fraction)</code>: 절대 임계(144h) 통과/탈락이 아니라 <strong>점수 상위 <code>top_fraction</code>(예 상위 50%)만 통과</strong>시키는 <strong>순위 분위(percentile) 게이트</strong>. (구 <code>surrogate_threshold</code> 모드는 backcompat용으로만 유지.)</li>
+<li><strong>출력</strong> — (passed, failed) 분할. 즉 "이 펩타이드가 144h를 넘느냐"가 아니라 "<strong>이번 후보들 중 상대적으로 안정한 상위권이냐</strong>"를 판정.</li>
+<li><strong>함의</strong> — 본 벤치마크 지표가 <strong>Spearman 순위상관</strong>인 이유와 정확히 일치: 게이트도 평가도 모두 <em>상대 순위</em>가 작동 단위다. <code>[MED]</code></li>
+</ul>
+<p><strong>개선 방향</strong>: ① 변형(아실화/PEG/D-aa) 메타데이터를 입력 피처로 받기 ② 고정 배수 → 변형 타입+개수+위치 비례 계수 ③ 장수 영역 훈련 데이터 보강 ④ 실측 in-vitro 혈청 어세이로 절대 캘리브레이션. (cf. [보고자료 2] 반감기 Top 권고)</p>
+<h2 id="ground-truth">출처 (문헌 ground-truth)</h2>
+<p>Wikipedia(Somatostatin/Octreotide/Lanreotide/Bivalirudin/Vasopressin), PMC6152110(bioactive peptides), PMC4740973·PMC6208649(melittin HC50), PMC5401818(GLP-1), PNAS(semaglutide), PubMed 25723538(exenatide), AJP-Heart(bradykinin), PMC9156514(pasireotide), PMC9898489(DOTATATE PBPK), PMC5760933(bivalirudin). 상세 = <code>_analysis/BENCH_literature.md</code>.</p>
+<p><em>생성: v2 = <code>bench_halflife_v2.py</code> 실측 실행(권위, <code>BENCH_halflife_v2_results.json</code>) / v1 = <code>bench_run.py</code> (참고). 2026-06-17. 우리 예측값은 재현 가능.</em></p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

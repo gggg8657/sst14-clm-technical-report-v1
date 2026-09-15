@@ -1,0 +1,424 @@
+{
+  "source": "BENCH_admet_v2.md",
+  "n": 50,
+  "got": 50,
+  "auc_all": [
+    0.32,
+    37,
+    13
+  ],
+  "auc_L": [
+    0.146,
+    24,
+    8
+  ],
+  "auc_D": [
+    0.677,
+    13,
+    5
+  ],
+  "n_L": 32,
+  "n_D": 18,
+  "rows": [
+    {
+      "name": "Melittin",
+      "sequence": "GIGAVLKVLTTGLPALISWIKRKRQQ",
+      "lit_hemolytic": true,
+      "lit_hc50": 16.28,
+      "our_hc50": -292.7114,
+      "group": "L"
+    },
+    {
+      "name": "D-Piscidin 1",
+      "sequence": "FFHHIFRGIVHVGKTIHRLVTG",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -224.8097,
+      "group": "D"
+    },
+    {
+      "name": "D-Dermaseptin S4",
+      "sequence": "ALWMTLLKKVLKAAAKALNAVLVGANA",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -282.725,
+      "group": "D"
+    },
+    {
+      "name": "Agelaia-MPI",
+      "sequence": "INWLKLGKAIIDAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -55.2481,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-T2",
+      "sequence": "INLKVFAALVKKLL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -54.8029,
+      "group": "L"
+    },
+    {
+      "name": "Polybia-MPII",
+      "sequence": "INWLKLGKMVIDAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -57.0774,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-T4",
+      "sequence": "INLFGFAALVKKFL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -59.4735,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-C",
+      "sequence": "INLKALLAVAKKIL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -49.397,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-T1",
+      "sequence": "INLKVFAALVKKFL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -59.3798,
+      "group": "L"
+    },
+    {
+      "name": "EpVP2b",
+      "sequence": "FDLLGLVKSVVSAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -46.8867,
+      "group": "L"
+    },
+    {
+      "name": "Ropalidia-MP",
+      "sequence": "INWAKLGKLALQAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -53.5665,
+      "group": "L"
+    },
+    {
+      "name": "Aurein 1.2",
+      "sequence": "GLFDIIKKIAESF",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -46.2595,
+      "group": "L"
+    },
+    {
+      "name": "PGLa",
+      "sequence": "GMASKAGAIAGKIAKVALKAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -110.3047,
+      "group": "L"
+    },
+    {
+      "name": "Indolicidin",
+      "sequence": "ILPWKWPWWPWRR",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -91.0516,
+      "group": "L"
+    },
+    {
+      "name": "Magainin 2",
+      "sequence": "GIGKFLHSAKKFGKAFVGEIMNS",
+      "lit_hemolytic": false,
+      "lit_hc50": 200.0,
+      "our_hc50": -196.539,
+      "group": "L"
+    },
+    {
+      "name": "Cecropin A",
+      "sequence": "KWKLFKKIEKVGQNIRDGIIKAGPAVAVVGQATQIAK",
+      "lit_hemolytic": false,
+      "lit_hc50": 169.0,
+      "our_hc50": -823.33,
+      "group": "L"
+    },
+    {
+      "name": "LL-37",
+      "sequence": "LLGDFFRKSKEKIGKEFKRIVQRIKDFLRNLVPRTES",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -1003.5087,
+      "group": "L"
+    },
+    {
+      "name": "Buforin II",
+      "sequence": "TRSSRAGLQFPVGRVHRLLRK",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -186.9603,
+      "group": "L"
+    },
+    {
+      "name": "Dermaseptin S1",
+      "sequence": "ALWKTMLKKLGTMALHAGKAALGAAADTISQGTQ",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -548.2862,
+      "group": "L"
+    },
+    {
+      "name": "D-Piscidin 1 I9K",
+      "sequence": "FFHHIFRGKVHVGKTIHRLVTG",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -227.2555,
+      "group": "D"
+    },
+    {
+      "name": "D-Dermaseptin S4 L7K,A14K",
+      "sequence": "ALWMTLKKKVLKAKAAKALNAVLVGANA",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -322.0946,
+      "group": "D"
+    },
+    {
+      "name": "Oxytocin",
+      "sequence": "CYIQNCPLG",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -13.1037,
+      "group": "L"
+    },
+    {
+      "name": "Pleurocidin",
+      "sequence": "GWGSFFKAAAHVGKHVGKAALTHYL",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -271.7767,
+      "group": "L"
+    },
+    {
+      "name": "Pyrrhocoricin",
+      "sequence": "VDKGSYLPRPTPPRPIYNRN",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -166.4249,
+      "group": "L"
+    },
+    {
+      "name": "D-Piscidin 1 G8P",
+      "sequence": "FFHHIFRPIVHVGKTIHRLVTG",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -231.5071,
+      "group": "D"
+    },
+    {
+      "name": "D-Piscidin 1 V12K",
+      "sequence": "FFHHIFRGIVHKGKTIHRLVTG",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -229.3414,
+      "group": "D"
+    },
+    {
+      "name": "D-Piscidin 1 G13K",
+      "sequence": "FFHHIFRGIVHVKKTIHRLVTG",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -235.4903,
+      "group": "D"
+    },
+    {
+      "name": "D-Dermaseptin S4 L7K",
+      "sequence": "ALWMTLKKKVLKAAAKALNAVLVGANA",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -285.7726,
+      "group": "D"
+    },
+    {
+      "name": "D-Dermaseptin S4 A14K",
+      "sequence": "ALWMTLLKKVLKAKAKALNAVLVGANA",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -292.7824,
+      "group": "D"
+    },
+    {
+      "name": "D-RR4",
+      "sequence": "WLRRIKAWLRRIKA",
+      "lit_hemolytic": false,
+      "lit_hc50": null,
+      "our_hc50": -84.2893,
+      "group": "D"
+    },
+    {
+      "name": "DGL13K",
+      "sequence": "GKIIKLKASLKLL",
+      "lit_hemolytic": false,
+      "lit_hc50": 1000.0,
+      "our_hc50": -40.3214,
+      "group": "D"
+    },
+    {
+      "name": "TPW-1",
+      "sequence": "AGWLLGDINLDALAALAKKIL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -145.3355,
+      "group": "D"
+    },
+    {
+      "name": "TPW-3",
+      "sequence": "AGWLLGDINLKALAALAKKIL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -147.2168,
+      "group": "D"
+    },
+    {
+      "name": "Protopolybia-MPIII",
+      "sequence": "INWLKLGKAVIDAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -54.2617,
+      "group": "L"
+    },
+    {
+      "name": "Polybia-MPIII",
+      "sequence": "IDWLKLGKMVMDVL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -59.5606,
+      "group": "L"
+    },
+    {
+      "name": "Pm-R3",
+      "sequence": "INWLKLGKQILGAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -54.5772,
+      "group": "L"
+    },
+    {
+      "name": "PDD-B",
+      "sequence": "INWLKLGKKILGAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -54.6665,
+      "group": "L"
+    },
+    {
+      "name": "Agelaia-MPII",
+      "sequence": "INWKAILQRIKKML",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -68.7836,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-J",
+      "sequence": "VDWKKIGQHILSVL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -60.2441,
+      "group": "L"
+    },
+    {
+      "name": "PMM2",
+      "sequence": "INWKKIASIGKEVLKAL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -96.1652,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-Lew",
+      "sequence": "INLKALAALAKKIL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -47.7934,
+      "group": "L"
+    },
+    {
+      "name": "Protonectarina-MP",
+      "sequence": "INWKALLDAAKKVL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -57.0762,
+      "group": "L"
+    },
+    {
+      "name": "Pm-R1",
+      "sequence": "INWLKLGKKILGAI",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -54.6013,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-T3",
+      "sequence": "INLRGFAALVKKFL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -59.0158,
+      "group": "L"
+    },
+    {
+      "name": "Mastoparan-II",
+      "sequence": "INLKALAALVKKVL",
+      "lit_hemolytic": true,
+      "lit_hc50": null,
+      "our_hc50": -48.3578,
+      "group": "L"
+    },
+    {
+      "name": "D1",
+      "sequence": "KWKSFLKTFKSAKKTVLHTALKAISS",
+      "lit_hemolytic": false,
+      "lit_hc50": 421.5,
+      "our_hc50": -326.1935,
+      "group": "D"
+    },
+    {
+      "name": "D2",
+      "sequence": "KWKSFLKTFKSAKKTVLHTLLKAISS",
+      "lit_hemolytic": true,
+      "lit_hc50": 83.0,
+      "our_hc50": -335.8397,
+      "group": "D"
+    },
+    {
+      "name": "D3",
+      "sequence": "KWKSFLKTFKSLKKTVLHTLLKAISS",
+      "lit_hemolytic": true,
+      "lit_hc50": 14.0,
+      "our_hc50": -343.6434,
+      "group": "D"
+    },
+    {
+      "name": "D4",
+      "sequence": "KWKSFLKTFKSLKKTVLHTLLKLISS",
+      "lit_hemolytic": true,
+      "lit_hc50": 3.5,
+      "our_hc50": -355.3498,
+      "group": "D"
+    },
+    {
+      "name": "D5",
+      "sequence": "KWKSFLKTFKSLKKTKLHTLLKLISS",
+      "lit_hemolytic": true,
+      "lit_hc50": 47.0,
+      "our_hc50": -361.4549,
+      "group": "D"
+    }
+  ]
+}

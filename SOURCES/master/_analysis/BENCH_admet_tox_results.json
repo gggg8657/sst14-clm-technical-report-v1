@@ -1,0 +1,243 @@
+{
+  "rows": [
+    {
+      "name": "Melittin",
+      "sequence": "GIGAVLKVLTTGLPALISWIKRKRQQ",
+      "lit_hc50": 16.28,
+      "lit_hemolytic": true,
+      "our_hc50": -292.7114,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "D-Piscidin 1",
+      "sequence": "FFHHIFRGIVHVGKTIHRLVTG",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -224.8097,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "D-Dermaseptin S4",
+      "sequence": "ALWMTLLKKVLKAAAKALNAVLVGANA",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -282.725,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Agelaia-MPI",
+      "sequence": "INWLKLGKAIIDAL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -55.2481,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Mastoparan-T2",
+      "sequence": "INLKVFAALVKKLL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -54.8029,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Polybia-MPII",
+      "sequence": "INWLKLGKMVIDAL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -57.0773,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Mastoparan-T4",
+      "sequence": "INLFGFAALVKKFL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -59.4736,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Mastoparan-C",
+      "sequence": "INLKALLAVAKKIL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -49.397,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Mastoparan-T1",
+      "sequence": "INLKVFAALVKKFL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -59.3798,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "EpVP2b",
+      "sequence": "FDLLGLVKSVVSAL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -46.8867,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Ropalidia-MP",
+      "sequence": "INWAKLGKLALQAL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -53.5665,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Aurein 1.2",
+      "sequence": "GLFDIIKKIAESF",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -46.2595,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "PGLa",
+      "sequence": "GMASKAGAIAGKIAKVALKAL",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -110.3047,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Indolicidin",
+      "sequence": "ILPWKWPWWPWRR",
+      "lit_hc50": null,
+      "lit_hemolytic": true,
+      "our_hc50": -91.0516,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "GS14Ll4 (gramicidin S analog)",
+      "sequence": "cyclic-14aa",
+      "lit_hc50": 3.0,
+      "lit_hemolytic": true,
+      "our_hc50": null,
+      "our_toxic": null,
+      "graph_note": null
+    },
+    {
+      "name": "Magainin 2",
+      "sequence": "GIGKFLHSAKKFGKAFVGEIMNS",
+      "lit_hc50": 200.0,
+      "lit_hemolytic": false,
+      "our_hc50": -196.539,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Cecropin A",
+      "sequence": "KWKLFKKIEKVGQNIRDGIIKAGPAVAVVGQATQIAK",
+      "lit_hc50": 169.0,
+      "lit_hemolytic": false,
+      "our_hc50": -823.33,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "LL-37",
+      "sequence": "LLGDFFRKSKEKIGKEFKRIVQRIKDFLRNLVPRTES",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -1003.5087,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Buforin II",
+      "sequence": "TRSSRAGLQFPVGRVHRLLRK",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -186.9603,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Dermaseptin S1",
+      "sequence": "ALWKTMLKKLGTMALHAGKAALGAAADTISQGTQ",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -548.2862,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "D-Piscidin 1 I9K",
+      "sequence": "FFHHIFRGKVHVGKTIHRLVTG",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -227.2555,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "D-Dermaseptin S4 L7K,A14K",
+      "sequence": "ALWMTLKKKVLKAKAAKALNAVLVGANA",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -322.0946,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Oxytocin",
+      "sequence": "CYIQNCPLG",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -13.1037,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Pleurocidin",
+      "sequence": "GWGSFFKAAAHVGKHVGKAALTHYL",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -271.7767,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "Pyrrhocoricin (proline-rich AMP)",
+      "sequence": "VDKGSYLPRPTPPRPIYNRN",
+      "lit_hc50": null,
+      "lit_hemolytic": false,
+      "our_hc50": -166.4249,
+      "our_toxic": true,
+      "graph_note": null
+    },
+    {
+      "name": "GS14Kd4 (gramicidin S analog)",
+      "sequence": "cyclic-14aa",
+      "lit_hc50": 125.0,
+      "lit_hemolytic": false,
+      "our_hc50": null,
+      "our_toxic": null,
+      "graph_note": null
+    }
+  ],
+  "spearman_hc50": 0.4999999999999999,
+  "n_spearman": 3,
+  "auc_hemolytic": 0.19285714285714287,
+  "n_pos": 14,
+  "n_neg": 10
+}

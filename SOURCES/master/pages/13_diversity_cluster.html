@@ -1,0 +1,254 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🌐 다양성 · 클러스터링 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html" class="active">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="ae-tier">다양성 관리 + 클러스터링 (A~E tier) — 기능 분석</h1>
+<blockquote>
+<p>분석 루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+대상 파일:
+- <code>pyrosetta_flow/cluster_report.py</code> (A~E tier 분류, 결정론적)
+- <code>AG_src/agents/diversity_manager.py</code> (구조/서열 다양성 관리 에이전트)
+- <code>AG_src/tools/mcp/foldmason_server.py</code> (FoldMason CLI MCP 래퍼)
+- <code>AG_src/pipeline/step07_analysis.py</code> (FoldMason 실호출 경로)
+- 호출부: <code>pyrosetta_flow/runner.py</code>, <code>AG_src/pipeline/orchestrator.py</code>,
+  <code>run_pipeline_live.py</code>, <code>backend/routers/cluster.py</code>
+모든 수치·동작은 소스 직독 인용. 미확인 항목은 "미검증" 명시.</p>
+</blockquote>
+<p><strong>중요</strong>: 본 분석은 서로 다른 두 시스템을 다룬다.
+1. <strong>A~E tier 분류</strong> (<code>cluster_report.py</code>) — 약리/구조 수치 임계값 기반 결정론적 5분류.
+2. <strong>다양성 관리 클러스터링</strong> (<code>diversity_manager.py</code>) — 유사 후보 그룹핑·중복 제거.
+   이름은 둘 다 "cluster"이지만 <strong>목적·알고리즘·tier 의미가 전혀 다르다</strong> (③ 참조).</p>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11-ae-tier-cluster_reportpy">1.1 A~E tier 분류 (<code>cluster_report.py</code>)</h3>
+<p>후보 1건을 약리/구조 수치 임계값으로 <strong>우선순위 A &gt; B &gt; C &gt; D &gt; E</strong> 단일 배정한다
+(<code>cluster_report.py:24-25</code>, <code>classify_cluster()</code> <code>:252-336</code>). 외부 의존 없는 순수 함수.</p>
+<p>tier 정의 (<code>cluster_report.py:9-22</code> docstring + 실제 criteria 함수):</p>
+<ul>
+<li><strong>A — High Affinity Core</strong> (<code>_criteria_a</code> <code>:159-188</code>):
+  <code>ddG ≤ -8.0</code> AND <code>clash_score ≤ 5.0</code> AND <code>pLDDT ≥ 75</code> AND FWKT 접촉 유지.</li>
+<li>pLDDT는 <strong>옵션 처리</strong>: None/0/NaN(ESMFold 미가동 PyRosetta-only 모드)이면
+    해당 기준을 True로 스킵(<code>:177-179</code>) — 나머지 3기준으로 A 자격 부여.</li>
+<li>FWKT 판정: <code>structural_rules.rules.fwkt_pharmacophore.pass</code> 불리언(<code>_fwkt_contact_maintained</code> <code>:70-87</code>).</li>
+<li><strong>B — Selectivity-Optimised</strong> (<code>_criteria_b</code> <code>:191-206</code>):
+  <code>selectivity_margin ≥ 3.0</code> AND <code>ddG &lt; -5.0</code>("SSTR2 binding present"로 operationalize, <code>:201</code>).</li>
+<li><strong>C — Stability-Enhanced</strong> (<code>_criteria_c</code> <code>:209-226</code>):
+  <code>instability_index &lt; 30</code> AND <code>BLOSUM62 total ≥ 0</code> AND <code>protease_sites ≤ 9</code>
+  (SST-14 native baseline <code>_SST14_PROTEASE_BASELINE=9</code>, <code>:56</code>, <code>:220</code>).</li>
+<li><strong>D — Radiochemistry-Optimal</strong> (<code>_criteria_d</code> <code>:229-246</code>):
+  <code>GRAVY ∈ [-1.0, +0.5]</code> AND <code>|net_charge_ph74| ≤ 1.0</code> AND chelator site 가용.</li>
+<li>chelator 판정(<code>_chelator_site_from_candidate</code> <code>:125-153</code>): <strong>sequence 우선</strong> —
+    N-말단 non-Pro(α-NH₂) <strong>또는</strong> Lys 존재(ε-NH₂)이면 True. sequence 없을 때만
+    <code>metal_coordination.n_strong ≥ 1</code> fallback.</li>
+<li>이는 P2-1 수정(<code>:133-141</code>): 기존 n_strong 로직이 SS-bond Cys thiol을 chelation
+    부위로 과대평가하던 버그를 약리학 기준(Krenning 1992; de Jong 2002; Maecke 2005)으로 교체.</li>
+<li><strong>E — Exploratory</strong> (<code>:325-336</code>): A~D 미충족 전부.</li>
+</ul>
+<p>배치 분류 <code>batch_classify()</code> (<code>:339-381</code>): 후보별 분류 + tier별 분포 카운트/퍼센트
++ tier→식별자 그룹맵 반환. 식별자는 <code>name</code>→<code>sequence</code>→<code>candidate_{idx}</code> 순(<code>:360</code>).</p>
+<p>각 criteria 함수는 <strong>개별 불리언 dict</strong>를 반환하고 <code>all(...)</code> 으로 통과 판정 — 즉
+어느 항목이 왜 떨어졌는지 추적 가능(<code>criteria_met</code> 필드, <code>:277</code>,<code>:290</code> 등).</p>
+<h3 id="12-diversity_managerpy-diversitymanageragent">1.2 다양성 관리 (<code>diversity_manager.py</code> — <code>DiversityManagerAgent</code>)</h3>
+<p>QC 게이트 통과 후보가 충분히 다양한 구조 공간을 차지하는지 보장하고 유사 후보 중복을
+제거한다(<code>:1-11</code>, <code>:72-96</code>). 통합 위치: QC <code>apply_gates()</code> 이후 → 최종 ranking 이전(<code>:10</code>,<code>:85</code>).</p>
+<p>4개 공개 메서드:</p>
+<ul>
+<li><strong><code>cluster_candidates()</code></strong> (<code>:122-157</code>): 후보를 유사도 기반 그룹핑.</li>
+<li><code>method="foldmason"</code> AND <code>tool_fn</code> 주입됨 → <code>_cluster_by_foldmason()</code> (lDDT 행렬 greedy).</li>
+<li><code>method="hybrid"</code> AND tool_fn → <code>_cluster_hybrid()</code>.</li>
+<li>그 외(또는 tool_fn 없음) → <code>_cluster_by_sequence()</code> 서열 greedy fallback,
+    이때 경고 로그 "FoldMason tool 미등록 - 서열 기반 근사…"(<code>:151-152</code>).</li>
+<li><strong><code>select_diverse_set(clusters, n)</code></strong> (<code>:159-208</code>): ①각 클러스터 대표 1개씩 선택 →
+  ②부족하면 큰 클러스터 2번째 멤버 추가 → ③<code>final_score</code> 내림차순 반환.</li>
+<li><strong><code>compute_diversity_score()</code></strong> (<code>:210-250</code>): 모든 후보에 lDDT 채워졌으면
+  <code>diversity = 1 - mean_lDDT</code>(<code>:229-234</code>), 아니면 평균 서열동일성 기반
+  <code>diversity = 1 - mean_identity</code>(<code>:236-250</code>). 1에 가까울수록 다양.</li>
+<li><strong><code>flag_redundant()</code></strong> (<code>:252-291</code>): final_score 내림차순으로 보존, 서열동일성 ≥
+  threshold(기본 0.8, <code>:100</code>)인 낮은 점수 쪽을 중복 표시.</li>
+</ul>
+<p>greedy 클러스터링 공통 패턴(<code>_cluster_by_sequence</code> <code>:382-419</code>,
+<code>_cluster_by_foldmason</code> <code>:421-490</code>): final_score 내림차순 정렬 → 고득점 seed가 대표 →
+미배정 후보 중 유사도 ≥ threshold면 같은 클러스터에 흡수. 결과는 크기 내림차순 정렬(<code>:155</code>).</p>
+<p>서열동일성은 <strong>정렬 없는 위치별 단순 비교</strong>(<code>_sequence_identity</code> <code>:507-521</code>):
+짧은 쪽 기준 매칭 / 긴 쪽 길이 — 길이차 패널티 포함. (정렬 미수행은 한계, ⑤ 참조.)</p>
+<h3 id="13-foldmason">1.3 FoldMason 구조 클러스터링 — 실제 호출 여부</h3>
+<p><strong>핵심 확인 결과</strong>: FoldMason 바이너리 래퍼는 2곳에 존재하나, <strong><code>DiversityManager</code> 경로에서는
+실호출되지 않는다</strong>.</p>
+<ul>
+<li><code>foldmason_server.py</code> (MCP 래퍼): <code>easy_msa</code>/<code>compute_lddt</code>/<code>refine_msa</code>/<code>cluster_structures</code>
+  4툴을 <code>subprocess.run([foldmason, …])</code>로 <strong>실제 CLI 호출</strong>하도록 정의(<code>:47-69</code>, <code>:265-401</code>).
+  단 docstring이 <code>_compute_lddt</code>/<code>_refine_msa</code>/<code>_cluster_structures</code>를
+  "IMPLEMENTATION SKELETON"으로 명시(<code>:314</code>,<code>:342</code>,<code>:365</code>) — 실파싱은 미검증.
+  파일 상단도 "This is an <em>interface definition</em>"(<code>:11</code>).</li>
+<li><code>step07_analysis.py:run_foldmason_alignment()</code> (<code>:186-254</code>): <code>conda run -n &lt;env&gt;
+  foldmason easy-msa … --alignment-type 3Di+AA</code>를 <strong>실제 subprocess 호출</strong>(<code>:212-223</code>).
+  실패 시 placeholder lDDT(0.0/1.0)로 fallback(<code>:236-237</code>,<code>:247-254</code>). 이 결과는
+  orchestrator에서 <code>Candidate.lddt</code>로 흘러들어감(<code>orchestrator.py:1096</code>).</li>
+<li>그러나 <code>DiversityManagerAgent</code>의 <code>tool_fn</code>(=run_foldmason 콜러블)은 <strong>어떤 호출부에서도
+  주입되지 않는다</strong>. 전 호출 지점:</li>
+<li><code>run_pipeline_live.py:1020</code> <code>DiversityManagerAgent(llm_provider=llm)</code> — tool_fn 없음.</li>
+<li><code>AG_src/pipeline/orchestrator.py:851</code> 동일 — tool_fn 없음.</li>
+<li><code>runs/run_live_demo.py:747</code> 동일 — tool_fn 없음.
+  → 따라서 <code>method="foldmason"</code>을 지정해도(<code>run_pipeline_live.py:1021</code>) 항상
+    <code>_cluster_by_sequence()</code> 서열 fallback으로 분기(<code>diversity_manager.py:145-153</code>).</li>
+<li>추가로 환경에 <code>foldmason</code> 바이너리 자체가 <strong>PATH에 없음</strong>(본 분석 시점 <code>which foldmason</code> → NOT FOUND).
+  <code>foldmason_server.py:44</code>는 미발견 시 문자열 <code>"foldmason"</code>로 폴백.</li>
+</ul>
+<p>즉 <strong>현재 운영 다양성 클러스터링은 100% 서열 기반</strong>이며, 구조(3Di/lDDT) 클러스터링은
+코드상 가능하나 비활성 상태다(미검증: foldmason 설치된 별도 환경 존재 여부).</p>
+<h3 id="14">1.4 파이프라인 통합 흐름</h3>
+<ul>
+<li><strong>PyRosetta runner</strong>(A~E tier): <code>runner.py:1163-1188</code> — pharma enrich 후
+  <code>_batch_classify(cluster_input)</code> 호출, 결과를 candidate manifest <code>entry["cluster"]</code>에 부착.
+  <code>_HAS_CLUSTER and _HAS_PHARMA</code> 동시 가용 시에만(<code>:1163</code>), 실패는 best-effort 흡수(<code>:1187-1188</code>).</li>
+<li><strong>AG 에이전트 파이프라인</strong>(다양성): <code>orchestrator.py:626-644</code> — Step05b 선택성 이후
+  <code>_invoke_agent("diversity_manager", {docking_results})</code> → <code>_adapt_agent_context</code>가
+  <code>docking_results</code>→<code>candidates</code>로 변환(<code>:96-105</code>), <code>n_select</code>=config <code>diversity_top_n</code>(기본 20).
+  결과 <code>diverse_candidates</code>→<code>selected_seq_ids</code> 역매핑(<code>:1045-1054</code>)으로 후보 축소.</li>
+<li><strong>백엔드 API</strong>: <code>backend/routers/cluster.py:7-27</code> <code>POST /cluster/classify</code> —
+  <code>batch_classify</code> 직접 노출, 모듈 부재 시 503.</li>
+</ul>
+<hr />
+<h2 id="2">② 영향</h2>
+<ul>
+<li><strong>Local optimum 회피</strong>: 다양성 관리가 유사 서열을 한 클러스터로 묶고 대표만 남겨
+  (<code>select_diverse_set</code>), 실험 슬롯이 거의 동일한 후보로 채워지는 것을 방지한다.
+  greedy seed가 final_score 최상위라 "좋으면서도 서로 다른" 집합을 지향.</li>
+<li>단 <strong>구조 다양성이 아닌 서열 다양성</strong>만 실효(③·1.3) → 동일 서열의 서로 다른
+    backbone/conformer는 다양하다고 인식하지 못함. local optimum 회피력은 제한적.</li>
+<li><strong>후보 분류(triage)</strong>: A~E tier가 후보를 약리/목적별로 묶어 다운스트림 우선순위와
+  대시보드 표시(<code>runner.py:1190-1209</code> 이후 enrichment)에 사용. A=친화도, B=선택성,
+  C=안정성, D=방사화학, E=탐색으로 의사결정자가 후보 성격을 즉시 파악.</li>
+<li><strong>중복 제거 효율</strong>: <code>flag_redundant</code>가 동일/유사 후보 중 저점수 측을 제거해 도킹/정밀화
+  비용 절감(<code>diversity_manager.py:252-291</code>).</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<p>명시적으로 등록된 Action Item(<code>_workspace</code> 내 AI-/R번호 등)과 본 기능을 직접 연결하는
+문서는 검색 결과 <strong>발견되지 않음</strong>(<code>_workspace/CONTINUOUS_DISCOVERY.md</code>에 divers/cluster/
+foldmason 관련 Action Item grep → 결과 없음). 따라서 <strong>직접 무관</strong>으로 판정하되,
+아래 코드 자체에서 드러난 갭(잠재 Action Item 후보)을 기록한다:</p>
+<ol>
+<li><strong>(잠재) FoldMason tool_fn 미주입</strong> — <code>method="foldmason"</code> 지정에도 항상 서열 fallback
+   (1.3). 구조 클러스터링을 실제로 쓰려면 호출부에서 <code>tool_fn=run_foldmason_alignment</code>
+   등을 주입해야 함. 현재 미연결.</li>
+<li><strong>(잠재) 두 "cluster" 개념 혼동 위험</strong> — <code>cluster_report</code>(A~E tier)와
+   <code>diversity_manager</code>(구조 그룹)는 별개인데 이름·대시보드 라벨이 모두 "Cluster"
+   (<code>backend/routers/pipelines.py:59</code> step07="Cluster", <code>agents.py:44</code> diversity=
+   "foldmason 클러스터링"). 문서/네이밍 분리 권장.</li>
+<li><strong>(잠재) foldmason_server skeleton</strong> — <code>_compute_lddt</code>/<code>_cluster_structures</code> 파싱이
+   skeleton 표기(1.3). 실 TSV 포맷 검증 필요.</li>
+</ol>
+<hr />
+<h2 id="4">④ 완성도 % + 근거</h2>
+<table>
+<thead>
+<tr>
+<th>구성요소</th>
+<th>완성도</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A~E tier 분류 (<code>cluster_report.py</code>)</td>
+<td><strong>~95%</strong></td>
+<td>5 criteria 전부 구현, P2-1 chelator 버그 수정 반영, 결정론적, runner·API·테스트(65개 test, <code>test_cluster_report.py</code>) 연결. 잔여: pLDDT 스킵·ddG operationalize 등 기준이 spec 근사.</td>
+</tr>
+<tr>
+<td>다양성 관리 — 서열 경로</td>
+<td><strong>~85%</strong></td>
+<td>cluster/select/score/redundant 4메서드 + execute 완비, orchestrator·live 연결. 잔여: 서열동일성이 정렬 없는 위치 비교(<code>:511</code>)라 indel에 취약.</td>
+</tr>
+<tr>
+<td>다양성 관리 — FoldMason 구조 경로</td>
+<td><strong>~40%</strong></td>
+<td><code>_cluster_by_foldmason</code> 로직 존재하나 <strong>tool_fn 미주입으로 비활성</strong>, 바이너리 PATH 부재(1.3). 코드는 있으나 운영 미가동.</td>
+</tr>
+<tr>
+<td>FoldMason MCP 래퍼</td>
+<td><strong>~60%</strong></td>
+<td>easy_msa 실호출 구현, 그러나 lddt/cluster 핸들러 "skeleton" 표기(<code>foldmason_server.py:314</code>등), 출력 파싱 미검증.</td>
+</tr>
+<tr>
+<td>step07 FoldMason 정렬</td>
+<td><strong>~80%</strong></td>
+<td>실 subprocess + 실패 fallback 구현(<code>step07_analysis.py:212-254</code>), lddt JSON 파싱은 sidecar 존재 가정.</td>
+</tr>
+</tbody>
+</table>
+<p>종합: <strong>A~E tier는 운영급, 다양성 관리는 서열 모드 한정 운영급, 구조 클러스터링은 미가동.</strong></p>
+<hr />
+<h2 id="5">⑤ 학술 가치</h2>
+<ul>
+<li><strong>A~E tier</strong>: 방사성의약품 후보를 약리 목적(친화도/선택성/안정성/방사화학/탐색)으로
+  분류하는 결정론적 triage는 다목적 최적화 후보 해석에 유용. chelator 판정의 약리학적
+  교정(SS-bond Cys 제외, N-term/Lys 기반, <code>:142</code> 문헌 인용)은 방법론적으로 정직.</li>
+<li><strong>다양성 관리</strong>: 구조 기반 MSA(FoldMason 3Di) 클러스터링 아이디어는
+  저서열동일성 펩타이드 변이체에 적합한 선택. 단 현재 실측은 서열동일성 기반이라
+  학술 주장 시 "구조 다양성" 표현은 과장 — <strong>서열 다양성</strong>으로 한정해야 함.</li>
+<li><strong>한계(정직성)</strong>: 서열동일성이 정렬 없는 위치별 비교(<code>_sequence_identity</code> <code>:507-521</code>)
+  → 길이 변이·삽입/결실이 있는 후보군에서 유사도 과소평가 가능. compute_diversity_score의
+  lDDT 분기도 lDDT가 전 후보에 채워진 경우에만 작동(<code>:228-229</code>).</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<p>A~E tier 분류 (라이브러리):</p>
+<pre><code class="language-python">from pyrosetta_flow.cluster_report import classify_cluster, batch_classify
+res = classify_cluster({&quot;sequence&quot;: &quot;AGCKNFFWKTFTSC&quot;, &quot;ddG&quot;: -9.0,
+                        &quot;clash_score&quot;: 3, &quot;structural_rules&quot;: {...}, ...})
+# res[&quot;cluster&quot;] in {&quot;A&quot;..&quot;E&quot;}, res[&quot;criteria_met&quot;], res[&quot;note&quot;]
+batch = batch_classify([cand1, cand2, ...])  # batch[&quot;statistics&quot;][&quot;distribution&quot;]
+</code></pre>
+<p>API:</p>
+<pre><code class="language-bash">curl -X POST .../cluster/classify -d '{&quot;candidates&quot;: [ {...}, {...} ]}'
+</code></pre>
+<p>다양성 관리:</p>
+<pre><code class="language-python">from AG_src.agents.diversity_manager import DiversityManagerAgent
+mgr = DiversityManagerAgent(similarity_threshold=0.8, clustering_method=&quot;foldmason&quot;,
+                            tool_fn=run_foldmason)   # tool_fn 미주입 시 서열 fallback
+out = mgr.execute({&quot;candidates&quot;: cand_list, &quot;n_select&quot;: 20, &quot;method&quot;: &quot;foldmason&quot;})
+# out[&quot;diverse_candidates&quot;], out[&quot;clusters&quot;], out[&quot;diversity_report&quot;], out[&quot;redundant_ids&quot;]
+</code></pre>
+<p>파이프라인에서는 별도 호출 불필요 — runner(A~E)·orchestrator(다양성)에 자동 통합.</p>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<ul>
+<li><strong>다양성 관리</strong>: 무한 발굴 엔진은 유사 변이를 대량 생성하므로, 중복 후보가 실험·도킹
+  슬롯을 잠식하면 탐색 효율이 급감한다. 대표 선택·중복 제거가 local optimum 고착을 늦추고
+  제한된 wetlab 슬롯을 서로 다른 후보로 채운다.</li>
+<li><strong>A~E tier</strong>: 단일 스칼라 점수만으로는 "왜 이 후보가 좋은가"를 설명 못 한다.
+  목적별 tier가 의사결정자에게 후보 성격(고친화 vs 선택적 vs 안정 vs 방사화학)을
+  즉시 제공해 다목적 trade-off 의사결정을 지원한다.</li>
+</ul>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<ul>
+<li>A~E tier 정의/우선순위: <code>cluster_report.py:9-25</code>, <code>:47-53</code></li>
+<li>criteria A~D: <code>cluster_report.py:159-188</code>, <code>:191-206</code>, <code>:209-226</code>, <code>:229-246</code></li>
+<li>pLDDT 옵션 스킵: <code>cluster_report.py:177-179</code></li>
+<li>chelator P2-1 수정: <code>cluster_report.py:125-153</code></li>
+<li>batch 통계: <code>cluster_report.py:339-381</code></li>
+<li>DiversityManager 분기(foldmason/hybrid/sequence): <code>diversity_manager.py:145-153</code></li>
+<li>tool_fn 미주입 시 경고: <code>diversity_manager.py:151-152</code></li>
+<li>_cluster_by_foldmason / _cluster_by_sequence: <code>diversity_manager.py:421-490</code>, <code>:382-419</code></li>
+<li>select_diverse_set / compute_diversity_score / flag_redundant:
+  <code>diversity_manager.py:159-208</code>, <code>:210-250</code>, <code>:252-291</code></li>
+<li>서열동일성(정렬 없음): <code>diversity_manager.py:507-521</code></li>
+<li>DiversityManager 생성(전부 tool_fn 없음): <code>run_pipeline_live.py:1020</code>,
+  <code>orchestrator.py:851</code>, <code>runs/run_live_demo.py:747</code></li>
+<li>live에서 method="foldmason" 지정: <code>run_pipeline_live.py:1021</code></li>
+<li>FoldMason MCP 실 subprocess + skeleton 표기: <code>foldmason_server.py:47-69</code>, <code>:265-401</code>,
+  <code>:11</code>, <code>:314</code>, <code>:342</code>, <code>:365</code>, <code>:44</code></li>
+<li>step07 FoldMason 실호출/fallback: <code>step07_analysis.py:186-254</code>, <code>:212-223</code>, <code>:236-254</code></li>
+<li>lddt → Candidate: <code>orchestrator.py:1096</code></li>
+<li>runner A~E 통합: <code>runner.py:1162-1188</code></li>
+<li>orchestrator 다양성 통합: <code>orchestrator.py:626-644</code>, <code>:96-105</code>, <code>:1045-1054</code></li>
+<li>백엔드 cluster API: <code>backend/routers/cluster.py:7-27</code></li>
+<li>환경 확인: <code>which foldmason</code> → NOT FOUND (본 분석 시점)</li>
+<li>미검증: foldmason TSV/JSON 실파싱 결과, 별도 conda env의 foldmason 설치 여부,
+  step07 실행 시간·실제 lDDT 값</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

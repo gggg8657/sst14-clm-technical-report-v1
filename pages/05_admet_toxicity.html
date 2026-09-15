@@ -1,0 +1,263 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🛡️ ADMET · 독성 게이트 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html" class="active">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="admet-surrogate-pepadmet-hc50">기능 분석 보고서 — ADMET Surrogate + pepADMET 독성 (hc50 게이트)</h1>
+<blockquote>
+<p>대상 모듈: <code>pyrosetta_flow/multiobjective.py</code>, <code>pyrosetta_flow/pepadmet_runner.py</code>,
+<code>pyrosetta_flow/pepadmet_toxicity.py</code>, <code>pyrosetta_flow/pepadmet_infer_script.py</code>, <code>backend/admet.py</code></p>
+<p><strong>인용 규칙</strong>: 모든 동작 주장은 <code>file_path:line</code> 으로 근거를 단다. 코드에서 직접 확인되지 않은 항목은
+"미검증"으로 명시한다. 본 문서는 읽기 전용 분석이며 코드를 수정하지 않았다.</p>
+<p><strong>단위 면책(가장 중요)</strong>: pepADMET HC50 출력의 <strong>절대 단위(μg/mL vs μM)는 원논문 대비 미검증</strong>이다
+(<code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>, <code>pyrosetta_flow/pepadmet_toxicity.py:40</code>).
+따라서 hc50 절대값 해석은 금지되며, <strong>native SST-14 기준선 대비 상대 비교 전용</strong>으로만 사용된다.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="1-a-admet-surrogate">1-A. ADMET surrogate (물성 기반 합리성 점수)</h3>
+<p>두 갈래의 ADMET 계산이 공존한다.</p>
+<p><strong>(a) <code>backend/admet.py</code> — 서열 전용 순수 파이썬 물성/약물유사성</strong> (외부 의존 없음, <code>backend/admet.py:7</code>)
+- 분자량(monoisotopic residue weight 합 + H2O): <code>backend/admet.py:74</code>
+- pH 7.4 net charge (K/R = +1, D/E = −1, H = +0.1, N항 +1·C항 −1): <code>backend/admet.py:77-89</code>
+- H-bond donor/acceptor (사이드체인 + backbone): <code>backend/admet.py:91-97</code>
+- Kyte-Doolittle 평균 소수성 + amphipathicity(분산): <code>backend/admet.py:99-107</code>
+- <strong>druglikeness_score (0~100, 25점×4 규칙)</strong>: MW 1200~2000 / |charge|≤3 / 소수성 [−2,+1] /
+  3연속 동일 잔기 없음 — <code>backend/admet.py:113-136</code>
+- 신장독성(PRRT renal retention) 위험: cationic 잔기(K/R/H) 기반 점수,
+  <code>min(100, (n_lys+n_arg)*20 + max(0,net_charge)*15)</code> — <code>backend/admet.py:188-200</code>.
+  근거로 DOTATATE(~25, Low)를 레퍼런스로 둠 (<code>backend/admet.py:155-156</code>).</p>
+<p><strong>(b) <code>multiobjective.admet_reasonableness()</code> — 다목적 랭킹용 0~1 합리성 점수</strong> (<code>pyrosetta_flow/multiobjective.py:64-90</code>)
+- 입력: <code>instability_index</code>, <code>gravy</code>, <code>boman_index</code>, <code>pi</code> 4개 물성 (<code>pyrosetta_flow/multiobjective.py:69-72</code>).
+  이 물성은 <code>AG_src.pipeline.pharma_properties.PharmaProperties</code> 가 계산 (<code>pyrosetta_flow/multiobjective.py:46</code>,
+  <code>pyrosetta_flow/multiobjective.py:135-147</code>). Cys3-Cys14 SS bond 는 pI 계산 시 해당 Cys 를 제외
+  (<code>pyrosetta_flow/multiobjective.py:138-140</code>, <code>pyrosetta_flow/multiobjective.py:146</code>).
+- <strong>부분점수 변환 + 가중 평균</strong>:
+  - Instability: &lt;40 만점, 40~80 선형 감점, &gt;80 0점 (<code>pyrosetta_flow/multiobjective.py:75</code>)
+  - GRAVY: ≤−1 만점(친수), 0→0.5, ≥1 0점 (<code>pyrosetta_flow/multiobjective.py:77</code>)
+  - Boman: &lt;1 결합경향 약함(절반 스케일), 1~4 선형, &gt;4 만점 (<code>pyrosetta_flow/multiobjective.py:79-84</code>)
+  - pI: 6~8 만점, 멀어질수록 선형 감점 (<code>pyrosetta_flow/multiobjective.py:86</code>)
+  - <strong>가중</strong>: <code>0.35*II + 0.30*GRAVY + 0.15*Boman + 0.20*pI</code> — 안정성·용해를 더 중시
+    (<code>pyrosetta_flow/multiobjective.py:88-89</code>). 임계값/범위는 모두 문헌 휴리스틱
+    (<code>pyrosetta_flow/multiobjective.py:57-62</code>).
+- 이 점수는 <code>cheap_objectives()</code> 의 <code>admet_score</code> 가 되고 (<code>pyrosetta_flow/multiobjective.py:154</code>),
+  <code>enrich_candidates()</code> 가 후보의 <code>druggability</code> 키로 매핑 (<code>pyrosetta_flow/multiobjective.py:264-265</code>).</p>
+<blockquote>
+<p><strong>honest disclaimer (VR-cycle-09 / H-06)</strong>: <code>half_life_h</code>, <code>admet_score</code> 는 <strong>랭킹용 surrogate</strong> 이며
+임상 반감기·임상 ADMET 수치가 아니다 (<code>pyrosetta_flow/multiobjective.py:15-18</code>). in-vitro assay 검증 없음.</p>
+</blockquote>
+<h3 id="1-b-pepadmet-gnn">1-B. pepADMET GNN 독성 추론</h3>
+<p><strong>모델</strong>: <code>toxicity_early_stop.pth</code> — MLR-GAT (RGCN + MLP + Attention), JCIM 2026, 66, 936-946
+(<code>pyrosetta_flow/pepadmet_toxicity.py:4-7</code>). 4개 멀티태스크 출력:
+binary toxicity / 6-class type / 4-class neurotoxicity / HC50 (<code>pyrosetta_flow/pepadmet_infer_script.py:110-112</code>).</p>
+<p><strong>실행 격리(conda subprocess)</strong>: bio-tools env 의 runner 가 pepadmet env(DGL 0.4.3)를 subprocess 로 호출
+(<code>pyrosetta_flow/pepadmet_runner.py:1-5</code>). <code>conda run --no-capture-output -n pepadmet python3 pepadmet_infer_script.py &lt;json&gt;</code>
+(<code>pyrosetta_flow/pepadmet_runner.py:77-81</code>), timeout 120s (<code>pyrosetta_flow/pepadmet_runner.py:80</code>).
+inline <code>-c</code> 대신 파일 직접 호출로 버퍼링 hang 방지 (<code>pyrosetta_flow/pepadmet_runner.py:76</code>,
+<code>pyrosetta_flow/pepadmet_runner.py:32</code>). stdout 마지막 JSON 라인 파싱 (<code>pyrosetta_flow/pepadmet_runner.py:88-92</code>).</p>
+<p><strong>그래프 빌드</strong>: SMILES → RDKit Mol → DGL 그래프 (<code>pyrosetta_flow/pepadmet_infer_script.py:74-78</code>,
+<code>51-71</code>). SMILES 파싱 실패 시 <strong>선형 폴백</strong> <code>Chem.MolFromSequence</code> (<code>pyrosetta_flow/pepadmet_infer_script.py:81-102</code>,
+<code>131-135</code>) — 이 경우 <code>graph_note="linear_sequence_fallback"</code> 가 기록되고
+(cyclic/SS bond 구조 소실), descriptor 는 2133차원 텐서(실패 시 zero) (<code>pyrosetta_flow/pepadmet_infer_script.py:23-48</code>).</p>
+<p><strong>SMILES 변환</strong>: runner 가 <code>smiles_converter.sequence_to_smiles()</code> 로 Cys3-Cys14 이황화 사이클릭 SMILES 생성
+시도 (<code>pyrosetta_flow/pepadmet_runner.py:61-66</code>, <code>pyrosetta_flow/smiles_converter.py:1-5</code>,
+<code>pyrosetta_flow/smiles_converter.py:55-60</code>).</p>
+<p><strong>출력 행</strong>: <code>binary_toxicity</code>(sigmoid), <code>is_toxic</code>(&gt;0.5), <code>toxicity_type</code>(6-class argmax),
+<code>neurotoxicity_type</code>(4-class argmax), <code>hc50</code>(task_3 회귀) — <code>pyrosetta_flow/pepadmet_infer_script.py:151-168</code>.
+정규화 레이어가 <code>hc50_unit</code>, <code>hc50_reliable</code> 플래그 부착 (<code>pyrosetta_flow/pepadmet_toxicity.py:40-43</code>).</p>
+<h3 id="1-c-hc50-native5">1-C. hc50 native±5 밴드 게이트 (핵심)</h3>
+<p><code>apply_toxicity_to_extra()</code> 가 pepADMET 결과를 extra_scores 에 기록하고 admet_score 에 페널티를 반영한다
+(<code>pyrosetta_flow/multiobjective.py:206-241</code>). 로직:</p>
+<ol>
+<li><strong>fail-closed</strong>: <code>available</code> 가 아니면 admet_score 를 건드리지 않음(가짜 안전판정 금지)
+   (<code>pyrosetta_flow/multiobjective.py:217-218</code>).</li>
+<li><strong>binary 는 기록만, 게이트 미사용</strong> — <code>pepadmet_toxic</code>/<code>binary_toxicity</code> 기록되지만 게이트에 쓰이지 않음
+   (<code>pyrosetta_flow/multiobjective.py:219-221</code>, 주석 <code>pyrosetta_flow/multiobjective.py:211-212</code>).</li>
+<li><strong>신뢰도 게이트(VR-A2, 2026-06-17)</strong>: <code>graph_note == "linear_sequence_fallback"</code> 이면
+   cyclic 구조 소실로 hc50 신뢰 불가 → <code>hc50_reliable=False</code> 기록 후 <strong>게이트 skip</strong>(fail-open: 가짜 독성판정 방지)
+   (<code>pyrosetta_flow/multiobjective.py:225-230</code>).</li>
+<li><strong>native 대비 상대(home-advantage) 게이트</strong>:
+   - native hc50 기준선 로드 (<code>native_toxicity_baseline.json</code>, hc50 = <strong>−55.6816</strong>, <code>_native_hc50_baseline()</code>
+     <code>pyrosetta_flow/multiobjective.py:171-185</code>).
+   - <code>delta = hc50 − native_hc50</code> (<code>pyrosetta_flow/multiobjective.py:232</code>), &gt;0 안전 / &lt;0 독성↑.
+   - <strong>native ±5 밴드(<code>_HC50_NATIVE_TOLERANCE = 5.0</code>)는 "동급"으로 무페널티</strong>
+     (<code>pyrosetta_flow/multiobjective.py:166</code>, <code>pyrosetta_flow/multiobjective.py:234</code>).
+   - 밴드 초과 독성일 때만 초과분에 선형 비례 페널티,
+     <code>factor = max(0.4, 1 − excess/200)</code> (<code>_TOXIC_ADMET_PENALTY=0.4</code>,
+     <code>_HC50_PENALTY_SCALE=200.0</code>) 로 admet_score 곱셈 감점
+     (<code>pyrosetta_flow/multiobjective.py:163</code>, <code>167</code>, <code>236-241</code>).
+   - <code>hc50_vs_native</code>, <code>more_toxic_than_native</code> 기록 (<code>pyrosetta_flow/multiobjective.py:233-235</code>).</li>
+</ol>
+<p>이 게이트 산출물은 글로벌 리더보드 통과 판정에 직접 쓰인다 —
+<code>count_passing()</code> 은 독성을 <strong><code>more_toxic_than_native is False</code>(명시적 측정)만 통과</strong>로 인정
+(<code>pyrosetta_flow/global_leaderboard.py:167-176</code>, 필드 적재 <code>pyrosetta_flow/global_leaderboard.py:104-106</code>).
+파이프라인 배선은 <code>scoring_pipeline.py:98-117</code> (Step 0.5, 배치 추론 후 페널티 반영, 실패 시 graceful skip).</p>
+<hr />
+<h2 id="2-binary-hc50-native">② 영향 — binary → hc50 교체로 "옥시토신/native 오판" 해결</h2>
+<p><strong>경위(정확히)</strong>:</p>
+<ul>
+<li><strong>문제</strong>: pepADMET <code>is_toxic</code>(binary)가 <strong>비변별적</strong> — 임상 안전 펩타이드(oxytocin),
+  native SST-14, 벌독(melittin) 을 <strong>전부 toxic=True</strong> 로 판정 (baseline note,
+  <code>data/somatostatin_receptor/curated/native_toxicity_baseline.json</code> note;
+  코드 주석 <code>pyrosetta_flow/multiobjective.py:164</code>, <code>pyrosetta_flow/multiobjective.py:211</code>).
+  이 binary 게이트가 in-loop 선택성 run 에서 "측정 후보 전원 toxic → admet×0.4 → full gate 탈락"
+  의 원인이었다(메모리 sstr2-selectivity-goal 기록).</li>
+<li><strong>관찰된 변별력</strong>: 동일 모델의 <strong>hc50 연속값은 생물학적으로 정확한 순서</strong> —
+  oxytocin(−14.5, 안전) &lt; native(−55.7) &lt; melittin(−292.7, 독성)
+  (baseline json note 의 대조군 수치).</li>
+<li><strong>교체</strong>: 게이트를 binary 에서 <strong>hc50 − native_hc50 상대(home-advantage)</strong> 로 전환
+  (<code>pyrosetta_flow/multiobjective.py:211-241</code>). Δmargin(선택성) 과 동일 철학 —
+  "native 를 기준선으로 두고 그보다 나쁜 후보만 벌점".</li>
+<li><strong>효과</strong>: native 동급(±5) 후보는 is_toxic=True 라도 무페널티가 되어
+  (<code>test_apply_toxicity_native_comparable_no_penalty</code> <code>pyrosetta_flow/tests/test_multiobjective.py:118-126</code>),
+  native 급 우수 후보가 admet×0.4 로 <strong>부당 탈락하던 문제가 해소</strong>되었다(에이전트 랭킹 정상화).
+  재평가 시 측정 8후보 중 7개가 "독성≤native"(무페널티)로 정상화됨(메모리 기록).</li>
+</ul>
+<blockquote>
+<p><strong>주의(미검증)</strong>: 위 oxytocin/native/melittin 대조 수치는 <code>native_toxicity_baseline.json</code> 의 note 와
+메모리에 기록된 값이며, 본 분석에서 모델을 재실행해 재현하지는 않았다(읽기 전용). 따라서
+"binary 비변별성"과 "hc50 변별력"은 <strong>기록된 측정 결과에 근거한 주장</strong>이지 본 세션에서 재검증된 것은 아니다.</p>
+</blockquote>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<table>
+<thead>
+<tr>
+<th>항목</th>
+<th>내용</th>
+<th>상태/근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>B (pepADMET 통합)</strong></td>
+<td>pepADMET GNN(toxicity_early_stop.pth)을 pepadmet conda env subprocess 배치 추론으로 다목적 랭킹에 연결</td>
+<td>구현 완료. <code>scoring_pipeline.py:98-117</code>(Step 0.5), <code>pyrosetta_flow/multiobjective.py:158-203</code>, runner/infer 전체. 백엔드 API 도 <code>merge_pepadmet_into_admet_results</code> 로 연결 (<code>backend/admet.py:242-276</code>, <code>backend/routers/admet.py:17-21</code>)</td>
+</tr>
+<tr>
+<td><strong>hc50 게이트 수정 (2026-06-10)</strong></td>
+<td>binary→hc50 native 상대 게이트로 교체</td>
+<td>완료. <code>pyrosetta_flow/multiobjective.py:206-241</code>, baseline json, 회귀 테스트 갱신/신설 (<code>pyrosetta_flow/tests/test_multiobjective.py:93-141</code>)</td>
+</tr>
+<tr>
+<td><strong>hc50 신뢰도 게이트 (VR-A2, 2026-06-17)</strong></td>
+<td>SMILES 선형 폴백(cyclic 소실) 시 hc50 신뢰불가 → 게이트 skip</td>
+<td>완료. <code>pyrosetta_flow/multiobjective.py:225-230</code>, <code>pyrosetta_flow/pepadmet_toxicity.py:24-43</code>, 테스트 <code>pyrosetta_flow/tests/test_multiobjective.py:107-115</code></td>
+</tr>
+<tr>
+<td><strong>HC50 단위 면책 (VR-A2)</strong></td>
+<td>hc50 절대단위 미검증 명시, 상대비교 전용 강제</td>
+<td>완료(문서화). <code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>, <code>pyrosetta_flow/pepadmet_toxicity.py:40</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>남은 과제(코드 기준 미해결)</strong>:
+- hc50 <strong>절대 단위 검증</strong>(μg/mL vs μM, 원논문 task_3 타깃과 대조) — 현재 미검증 면책으로만 회피
+  (<code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>).
+- SMILES 변환 성공률 — 사이클릭 SMILES 실패 시 선형 폴백되면 hc50 게이트가 통째로 skip 되어
+  독성 신호가 사라짐 (<code>pyrosetta_flow/multiobjective.py:225-230</code>). 폴백 빈도/영향은 미측정.</p>
+<hr />
+<h2 id="4">④ 완성도 평가</h2>
+<p><strong>약 75%</strong></p>
+<p>근거(가점):
+- 데이터 흐름 end-to-end 연결됨: cheap_objectives → enrich → pepADMET 추론 → hc50 게이트 →
+  리더보드 통과 판정 (<code>pyrosetta_flow/multiobjective.py:101-266</code>, <code>scoring_pipeline.py:98-117</code>,
+  <code>global_leaderboard.py:167-176</code>).
+- 견고한 실패 처리: import/subprocess/timeout/JSON 파싱 모두 graceful, fail-closed(가짜 안전) vs
+  fail-open(신뢰불가 hc50) 구분 명확 (<code>pyrosetta_flow/pepadmet_runner.py:54-99</code>,
+  <code>pyrosetta_flow/multiobjective.py:217-230</code>).
+- 회귀 테스트 5종이 게이트 분기를 모두 커버(페널티/폴백 skip/동급 무페널티/비독성/unavailable)
+  (<code>pyrosetta_flow/tests/test_multiobjective.py:93-141</code>).
+- 정직성 메커니즘: surrogate disclaimer, 단위 면책, home-advantage 보정.</p>
+<p>감점:
+- <strong>hc50 절대 단위 미검증</strong>(−), 상대비교로만 우회 (<code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>).
+- <strong>선형 폴백 시 독성 게이트 통째 skip</strong> → cyclic 펩타이드인데 SMILES 변환이 자주 실패하면
+  독성 평가가 무력화될 수 있음(빈도 미측정) (<code>pyrosetta_flow/multiobjective.py:225-230</code>).
+- binary/type/neurotoxicity 출력은 <strong>기록만 되고 게이트에 미반영</strong> — 4개 멀티태스크 중 1개(hc50)만 의사결정에 사용
+  (<code>pyrosetta_flow/multiobjective.py:219-221</code>).
+- <code>backend/admet.py</code> 신장독성 점수의 계수(20/15)는 단일 레퍼런스(DOTATATE) 외 보정 근거 부재
+  (<code>backend/admet.py:188</code>).</p>
+<hr />
+<h2 id="5">⑤ 학술적 가치</h2>
+<ul>
+<li><strong>home-advantage 상대 게이트</strong>: 절대값이 비변별/미검증인 모델 출력을 폐기하지 않고
+  "native 기준선 대비 Δ" 로 재구성해 변별력을 회복한 설계는 일반화 가치가 있다 — 선택성 Δmargin 과
+  동일 패턴으로 대칭(<code>pyrosetta_flow/multiobjective.py:211-214</code>).</li>
+<li><strong>다중 신뢰 게이트</strong>: available(fail-closed) → graph_note(fail-open) → native-band 의 3층 게이트로
+  "환각된 안전/독성 판정"을 양방향 차단 (<code>pyrosetta_flow/multiobjective.py:217-241</code>).</li>
+<li><strong>정직한 한계 노출</strong>: surrogate disclaimer 와 단위 면책을 코드 주석으로 명문화 — 재현성·신뢰성 보고에 모범
+  (<code>pyrosetta_flow/multiobjective.py:15-18</code>, <code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>).</li>
+<li>한계: 단일 모델(pepADMET) 의존, 절대 단위 미검증, in-vitro/in-vivo cross-validation 부재 →
+  현재로선 <strong>랭킹 보조 신호</strong>로서의 가치이지 임상 예측 가치는 주장 불가.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<p><strong>라이브러리(다목적 파이프라인 내부)</strong> — 자동 호출됨:</p>
+<pre><code class="language-python">from pyrosetta_flow.multiobjective import (
+    cheap_objectives, enrich_candidates,
+    predict_toxicity_for_sequences, apply_toxicity_to_extra,
+)
+enrich_candidates(candidates)                 # admet_score/druggability 채움
+tox = predict_toxicity_for_sequences([seq])   # pepADMET 배치 추론
+apply_toxicity_to_extra(cand[&quot;extra_scores&quot;], tox[seq])  # hc50 게이트 적용
+</code></pre>
+<p>(<code>pyrosetta_flow/multiobjective.py:188-241</code>)</p>
+<p><strong>단건 독성 예측</strong>:</p>
+<pre><code class="language-python">from pyrosetta_flow.pepadmet_toxicity import predict_toxicity
+r = predict_toxicity(&quot;AGCKNFFWKTFTSC&quot;)        # smiles 생략 시 자동 변환
+</code></pre>
+<p>(<code>pyrosetta_flow/pepadmet_toxicity.py:59-80</code>)</p>
+<p><strong>백엔드 REST API</strong>:
+- <code>GET /admet/{sequence}</code> — 물성+신장독성+pepADMET 병합 (<code>backend/routers/admet.py:24-26</code>)
+- <code>POST /admet/batch</code> — 배치 (<code>backend/routers/admet.py:29-30</code>)</p>
+<p><strong>환경 변수</strong>:
+- <code>SKIP_PEPADMET=1</code> — pepADMET 호출 생략(테스트/빠른 응답) (<code>backend/admet.py:250-251</code>)
+- <code>PEPADMET_REPO</code> — pepADMET repo 경로 오버라이드 (<code>pyrosetta_flow/pepadmet_runner.py:26-30</code>)</p>
+<p><strong>필수 전제</strong>: pepadmet conda env + <code>local_models/pepadmet/repo</code> + <code>model/toxicity_early_stop.pth</code>
+존재 (<code>pyrosetta_flow/pepadmet_runner.py:19-23</code>, <code>pyrosetta_flow/pepadmet_infer_script.py:105</code>).
+미존재 시 <code>available=False</code> 로 graceful skip.</p>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<ol>
+<li><strong>선택성만으로는 부족</strong>: SSTR2 선택성이 우수해도 독성·짧은 반감기·낮은 용해 후보는 약물이 될 수 없다.
+   ADMET surrogate(<code>admet_score</code>)와 pepADMET 독성이 다목적 게이트의 일부로 안전성·약물유사성을 랭킹에 주입한다
+   (<code>pyrosetta_flow/multiobjective.py:1-9</code>, ObjectiveWeights.admet=0.15 <code>pyrosetta_flow/multiobjective.py:278</code>).</li>
+<li><strong>방사성의약품(PRRT) 특이 위험</strong>: 신장 재흡수에 의한 신장독성은 PRRT 의 용량 제한 독성 —
+   cationic 함량 기반 위험 점수가 이를 조기 경고 (<code>backend/admet.py:150-217</code>).</li>
+<li><strong>환각/오판 차단</strong>: binary 비변별성으로 인한 native/oxytocin 오판이 우수 후보를 부당 탈락시키던 문제를
+   hc50 home-advantage 게이트가 교정해, 에이전트의 자율 랭킹이 정상 작동하도록 한다
+   (§② 참조, <code>pyrosetta_flow/multiobjective.py:206-241</code>).</li>
+</ol>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<ul>
+<li>동작 확인(직접 코드):</li>
+<li><code>pyrosetta_flow/multiobjective.py:64-90</code> — admet_reasonableness 가중/임계값</li>
+<li><code>pyrosetta_flow/multiobjective.py:101-155</code> — cheap_objectives, PharmaProperties, SS bond pI 처리</li>
+<li><code>pyrosetta_flow/multiobjective.py:163-185</code> — 페널티 상수, native_hc50 기준선 로드</li>
+<li><code>pyrosetta_flow/multiobjective.py:206-241</code> — apply_toxicity_to_extra (binary 미사용·hc50 게이트·신뢰도 skip)</li>
+<li><code>pyrosetta_flow/pepadmet_runner.py:54-99</code> — subprocess/conda 호출, 실패 처리</li>
+<li><code>pyrosetta_flow/pepadmet_infer_script.py:105-170</code> — MGA 모델 로드, 4태스크 출력, 선형 폴백</li>
+<li><code>pyrosetta_flow/pepadmet_toxicity.py:22-56</code> — 정규화, hc50_unit/hc50_reliable</li>
+<li><code>backend/admet.py:54-228</code> — 물성/약물유사성/신장독성 계산</li>
+<li><code>backend/admet.py:242-276</code>, <code>backend/routers/admet.py:13-30</code> — pepADMET 병합·REST</li>
+<li><code>pyrosetta_flow/global_leaderboard.py:104-106</code>, <code>167-176</code> — 독성 통과 판정 필드/로직</li>
+<li><code>pyrosetta_flow/scoring_pipeline.py:98-117</code> — 파이프라인 Step 0.5 배선</li>
+<li><code>data/somatostatin_receptor/curated/native_toxicity_baseline.json</code> — hc50=−55.6816, 대조군 note</li>
+<li>
+<p>테스트: <code>pyrosetta_flow/tests/test_multiobjective.py:39-141</code>,
+    <code>pyrosetta_flow/tests/test_continuous_discovery.py:28-45</code></p>
+</li>
+<li>
+<p><strong>미검증 / 측정 미재현(읽기 전용 한계)</strong>:</p>
+</li>
+<li><strong>HC50 절대 단위(μg/mL vs μM)</strong> — 원논문 대비 미검증, 상대비교 전용 (<code>pyrosetta_flow/pepadmet_toxicity.py:24-30</code>, <code>40</code>)</li>
+<li>oxytocin(−14.5)/native(−55.7)/melittin(−292.7) 대조 수치 — baseline json note·메모리 기록 근거,
+    본 세션 모델 재실행 미수행</li>
+<li>"binary 전원 toxic" 비변별성 — 기록된 측정 결과 근거, 본 세션 재현 안 함</li>
+<li>SMILES 사이클릭 변환 성공률 / 선형 폴백 발생 빈도 — 미측정</li>
+<li>admet_reasonableness 임계값·가중(0.35/0.30/0.15/0.20), 신장독성 계수(20/15) 의 문헌 정량 보정 근거 —
+    코드 주석의 휴리스틱 표기 외 외부 검증 미확인</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

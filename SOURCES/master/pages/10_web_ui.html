@@ -1,0 +1,231 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🖥️ 웹 UI (FastAPI+React+Mol*) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html" class="active">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="10-ui-fastapi-react-mol">10. 웹 UI 기능 분석 보고서 (FastAPI + React + Mol*)</h1>
+<blockquote>
+<p>루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+대상: <code>backend/</code> (FastAPI), <code>frontend/src/</code> (React 19 + Vite + Mol*)
+규칙: 모든 사실은 <code>file_path:line</code> 인용. 미확인 항목은 "미검증" 명시. 읽기전용 분석.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="a-fastapi">A. 백엔드 아키텍처 (FastAPI)</h3>
+<ul>
+<li><strong>앱 팩토리</strong>: <code>create_app()</code> 이 모든 라우터를 <code>/api</code> 프리픽스로 등록 (<code>backend/main.py:45-135</code>). 모듈 레벨 <code>app = create_app()</code> 으로 <code>uvicorn backend.main:app</code> 기동 (<code>backend/main.py:139</code>, <code>backend/main.py:7</code>).</li>
+<li><strong>CORS</strong>: <code>http://localhost:5173</code>(Vite dev), <code>http://localhost:8787</code>(API) 만 허용, 메소드 <code>GET/POST/PUT/DELETE/OPTIONS</code> (<code>backend/main.py:65-70</code>).</li>
+<li><strong>표준 에러 응답</strong>: <code>{"error","detail","status_code"}</code> 형식으로 전역 예외(500)·HTTPException·ValidationError(422) 핸들러 정의 (<code>backend/main.py:73-108</code>).</li>
+<li><strong>포트</strong>: 기본 <code>8787</code>, <code>API_PORT</code> env 로 override (<code>backend/state.py:56</code>).</li>
+</ul>
+<h3 id="b-statusemitter-json">B. StatusEmitter → JSON 파일 → 폴링 (핵심 데이터 흐름)</h3>
+<p>이 시스템의 라이브 모니터링은 <strong>SSE/WebSocket 푸시가 아니라 "파일 + 폴링"</strong> 으로 동작한다.</p>
+<ol>
+<li>
+<p><strong>쓰기(Writer)</strong>: 파이프라인(<code>scripts/run_pyrosetta_flow.py</code>)이 <code>StatusEmitter</code> 인스턴스를 통해 상태를 갱신.
+   - 상태 파일 기본 경로 <code>/tmp/pipeline_local_status.json</code> (<code>backend/status_emitter.py:30-34</code>, env <code>PIPELINE_STATUS_FILE</code>).
+   - 상태 dict 스키마: <code>steps</code>(13개 파이프라인 단계), <code>agents</code>(5개), <code>rosetta_substeps</code>(7개), <code>timeline</code>, <code>candidates</code>, <code>qc_gates</code>, <code>convergence</code>, <code>best_candidate</code>, <code>molecules</code>, <code>visualization_images</code>, <code>completed</code> 등 (<code>backend/status_emitter.py:91-114</code>).
+   - 모든 갱신 메소드(<code>update_step</code>, <code>update_agent</code>, <code>set_candidates</code> 등)가 매번 <code>flush()</code> 호출 (<code>backend/status_emitter.py:117-134</code>).
+   - <strong>flush() 는 원자적 쓰기</strong>: <code>fcntl.flock</code> 배타 락 + temp write + <code>rename</code> 으로 동시 워커의 torn-write 방지 (<code>backend/status_emitter.py:117-133</code>, C5 fix 주석).</p>
+</li>
+<li>
+<p><strong>읽기(Reader)</strong>: <code>GET /api/status</code> (<code>backend/routers/status.py:157-164</code>).
+   - <code>read_status()</code> 가 파일 mtime 캐시로 I/O 절약하되 <code>server_time</code> 은 캐시 hit 시에도 매번 갱신 (<code>backend/state.py:127-153</code>).
+   - <code>is_active_run</code> 파생 필드 주입: <code>(not completed) AND (steps 또는 candidates 존재)</code> (<code>backend/state.py:101-124</code>).
+   - 파일 부재 시 <code>{"error":"no_status_file","connected":False}</code> 반환 (<code>backend/state.py:136-137</code>).
+   - <strong>on-the-fly enrichment</strong>: candidates 에 6개 약리/구조 필드(instability_index, gravy, net_charge_ph74, selectivity_margin, fwkt_contact, chelator_site_available)를 응답 시점에 머지 (<code>backend/routers/status.py:60-164</code>). ⑤⑥은 sequence-only 휴리스틱이라 HEURISTIC 으로 명시 (<code>backend/routers/status.py:73-76</code>, <code>138-150</code>).</p>
+</li>
+<li>
+<p><strong>폴링(Frontend)</strong>: <code>usePipelineStatus(2000)</code> 훅이 2초 간격으로 <code>fetch('/api/status')</code> (<code>frontend/src/hooks/usePipelineStatus.ts:262-296</code>, <code>329-343</code>).
+   - <code>AbortController</code> 로 이전 요청 취소 (<code>usePipelineStatus.ts:263-265</code>).
+   - <code>no_status_file</code>/<code>connected:false</code> 감지 시 <code>INITIAL_STATE</code> 로 리셋 — Live 대시보드로 오인 방지 (<code>usePipelineStatus.ts:274-283</code>).
+   - snake_case BE → camelCase FE 매핑은 <code>parseStatusData()</code> (<code>usePipelineStatus.ts:170-236</code>).
+   - 동시에 <code>/api/runs</code> 폴링으로 아카이브 목록 갱신, <code>switchRun()</code> 으로 과거 run 조회(<code>/api/runs/{run_id}</code>) (<code>usePipelineStatus.ts:252-260</code>, <code>298-326</code>).</p>
+</li>
+</ol>
+<blockquote>
+<p><strong>폴링 중복(설계상 의도)</strong>: <code>usePipelineStatus</code> 가 <code>/api/status</code>(2s), <code>useExperiment</code> 가 <code>/api/experiment/status</code>(3s) 를 별도 폴링. 전자는 대시보드 시각화, 후자는 start/stop 제어용 (<code>usePipelineStatus.ts:238-245</code>, <code>frontend/src/hooks/useExperiment.ts:74-93</code>).</p>
+</blockquote>
+<h3 id="c-experiment-control">C. 실험 제어 (Experiment Control)</h3>
+<ul>
+<li><code>POST /api/experiment/run</code> 이 <code>subprocess.Popen</code> 으로 <code>scripts/run_pyrosetta_flow.py</code> 를 <code>bio-tools</code> conda python 으로 기동 (<code>backend/routers/experiment.py:205-293</code>, <code>145-155</code>).</li>
+<li>템플릿 PDB 기본값 <code>SSTR2_SST14_complex_boltz_1.pdb</code> (<code>experiment.py:220-222</code>).</li>
+<li>시작 즉시 <code>phase:"initializing"</code> 최소 status 파일 기록 (<code>experiment.py:84-98</code>, <code>273</code>).</li>
+<li><strong>watchdog 스레드</strong>: 기본 1시간(<code>EXPERIMENT_MAX_RUNTIME</code>) 초과 시 <code>SIGTERM→SIGKILL</code> (<code>experiment.py:30-31</code>, <code>112-142</code>).</li>
+<li>정상/중지/타임아웃 종료 시 <code>_auto_archive()</code> 로 <code>archives/{run_id}_dashboard.json</code> 저장 (<code>experiment.py:34-70</code>, <code>296-317</code>).</li>
+<li><code>GET /api/experiment/models</code>: vLLM(<code>port 8000</code> <code>/v1/models</code>) 우선 조회, 실패 시 ollama 폴백, 최종 폴백 <code>["qwen3-32b"]</code> (<code>experiment.py:163-189</code>).</li>
+<li>FE <code>useExperiment</code> 가 config/models 로드 + start/stop + 상태 폴링 담당 (<code>useExperiment.ts:53-141</code>).</li>
+</ul>
+<h3 id="d-rest-sse">D. 에이전트 로그 — REST + SSE</h3>
+<p>여기에만 진짜 <strong>SSE(Server-Sent Events)</strong> 가 존재한다.</p>
+<ul>
+<li><code>GET /api/agents/{run_id}/log</code>: <code>runs_local/{run_id}/experiment_log.jsonl</code> 등에서 누적 로그 1회 반환 (<code>backend/routers/agents.py:176-181</code>, <code>60-75</code>).</li>
+<li><code>GET /api/agents/{run_id}/stream</code>: <code>text/event-stream</code> 응답, <code>_tail_log_file</code> 이 jsonl 파일을 0.25s 간격 tail 하며 새 라인을 큐로 푸시, 10s 무이벤트 시 <code>: ping</code> keepalive (<code>agents.py:193-225</code>, <code>133-173</code>).</li>
+<li>path traversal 방어: <code>..</code>, <code>/</code>, <code>\</code> 토큰 거부 (<code>agents.py:68-74</code>, <code>111-114</code>).</li>
+<li>에이전트 6종 고정 정의(planner/builder/qcranker/diversity/critic/reporter) (<code>agents.py:40-47</code>). 단, FE <code>AgentMonitor</code> 가 소비하는 에이전트는 <code>status</code> JSON 의 5종(<code>status_emitter.py:58-64</code>)이며 이 SSE 로그 6종과 별개 — <strong>두 에이전트 표현이 분리</strong>되어 있음(미검증: FE 가 <code>/api/agents/.../stream</code> 을 실제 구독하는 컴포넌트는 본 분석 파일 범위에서 확인 안 함).</li>
+</ul>
+<h3 id="e-mol-3d">E. Mol* 3D 구조 뷰어</h3>
+<ul>
+<li><strong>PDB 서빙</strong>: <code>GET /api/structures/{rel_path}</code> 가 <code>runs/</code>, <code>runs/pyrosetta_flow/</code>, <code>runs_local/</code>, <code>data/</code> 4개 베이스에서 <code>.pdb</code> 만 서빙 (<code>backend/routers/static.py:20-39</code>). 보안: <code>relative_to</code> 경로 탈출 차단 + symlink 거부 (<code>static.py:24-31</code>). 이미지는 <code>/api/images/{rel_path}</code> (<code>static.py:42-60</code>).</li>
+<li><strong>Mol* 로딩</strong>: <code>MoleculeViewer</code> 컴포넌트가 <code>PluginContext</code> 초기화 → <code>mountAsync</code> → <code>builders.data.download(Asset.Url(pdbUrl))</code> → <code>parseTrajectory(..., PdbProvider)</code> → preset 적용 (<code>frontend/src/components/MoleculeViewer.tsx:50-91</code>).</li>
+<li>4가지 view mode(Complex/Cartoon/Ball&amp;Stick/Surface)를 Mol* preset 으로 매핑 (<code>MoleculeViewer.tsx:240-265</code>).</li>
+<li>dark theme 배경(<code>0x0f172a</code>), 카메라 리셋, fullscreen, ESC 닫기, focus trap 접근성 (<code>MoleculeViewer.tsx:57</code>, <code>112-129</code>, <code>41</code>).</li>
+<li><code>pdbUrl</code> 은 candidate <code>pdb_path</code>(=<code>source</code>) 에서 <code>/api/structures/...</code> 로 변환 (<code>SelectivityExplorerPage.tsx:423-447</code>, <code>CandidatePage.tsx:81</code>). 셀렉티비티 receptor 구조는 별도 <code>GET /api/selectivity/structure/{name}</code> 로 CIF/PDB 서빙 (<code>backend/routers/selectivity.py:96-115</code>).</li>
+</ul>
+<h3 id="f">F. 셀렉티비티 라우터</h3>
+<ul>
+<li><code>GET /api/selectivity/receptors</code>: SSTR1/2/3/4/5 CIF 파일 존재 여부·크기 반환, 0개 로드 시 error 로그 (<code>selectivity.py:39-68</code>).</li>
+<li><code>POST /api/selectivity/upload</code>: receptor 구조 파일 업로드 (<code>selectivity.py:71-93</code>).</li>
+<li>셀렉티비티 분석 job 은 in-memory <code>_JOBS</code> dict 에 보관, <code>status.py</code> 가 완료 job 의 margin 을 candidate 에 머지 (<code>selectivity.py:120</code>, <code>status.py:39-57</code>).</li>
+</ul>
+<hr />
+<h2 id="2-impact">② 영향 (Impact)</h2>
+<ul>
+<li><strong>단일 SSOT 패턴의 장점</strong>: 컴퓨트 레이어(파이프라인 워커)와 표현 레이어(웹)가 JSON 파일 1개로만 결합 → 백엔드가 죽어도 파일이 남고, 파이프라인이 죽어도 마지막 상태가 보존됨. flock 원자 쓰기로 동시성 안전 (<code>status_emitter.py:117-133</code>, <code>state.py:71-90</code>).</li>
+<li><strong>폴링 비용</strong>: <code>/api/status</code>(2s) + <code>/api/runs</code>(2s) + <code>/api/experiment/status</code>(3s) 가 클라이언트마다 상시 발생. mtime 캐시로 파일 파싱은 절약되나 HTTP 왕복·enrichment 계산(<code>_enrich_candidates</code>)은 매 폴링마다 수행 (<code>status.py:60-164</code>) — 후보 수 증가 시 응답 지연 가능(미검증: 부하 측정 없음).</li>
+<li><strong>아카이브 기반 회고</strong>: 완료 run 이 자동으로 <code>archives/{run_id}_dashboard.json</code> + PDB 사본으로 보존되어 과거 run 재현 가능 (<code>status_emitter.py:397-425</code>, <code>experiment.py:34-70</code>).</li>
+<li><strong>무한 발굴 엔진과의 단절(중대)</strong>: 아래 ④ 참조 — 본 UI 는 <code>/api/experiment/*</code>(유한 run) 만 제어하며, 무한 발굴 엔진(<code>pyrosetta_flow/continuous.py</code>)의 출력을 전혀 표시·제어하지 못함.</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<blockquote>
+<p>근거: <code>MEMORY.md</code> — <code>sstr2-ui-goal</code> 메모리("<strong>차기 GOAL(미착수)</strong>: 무한엔진용 풀 웹 모니터링·제어 UI"), UI goal 프롬프트 <code>_workspace/GOAL_UI_2026-06-10.md</code>.</p>
+</blockquote>
+<ol>
+<li><strong>[UI 연동, 최우선] 무한엔진 ↔ 웹 연결</strong>: 백엔드에 <code>/api/discovery/*</code> 라우터를 신설하여 <code>runs/pyrosetta_flow/discovery_status.json</code> / <code>global_selectivity_leaderboard.json</code> 을 서빙하고, FE 폴링 훅(<code>useDiscovery</code> 등)을 추가. (현재 0개 — ④ 참조)</li>
+<li><strong>[UI 연동] 무한엔진 제어</strong>: <code>_workspace/discovery_control.json</code> 을 통한 시작/정지/파라미터 조정 엔드포인트. (현재 파일만 존재, 웹 제어 경로 없음)</li>
+<li><strong>[UI goal Phase] 전면 재디자인</strong>: UI goal(L3)이 "무한엔진 연결 + 전면 재디자인"을 함께 요구 — 현재 13단계 유한 파이프라인 시각화(<code>status_emitter.py:42-56</code>)가 무한 epoch 모델과 정보구조가 맞지 않음.</li>
+<li><strong>[리팩토링 후보] 에이전트 표현 이원화 해소</strong>: <code>status</code> JSON 5-에이전트(<code>status_emitter.py:58-64</code>) vs <code>/api/agents</code> SSE 6-에이전트(<code>agents.py:40-47</code>) 통합 검토.</li>
+<li><strong>[성능] 폴링 → SSE 통합 검토</strong>: 기존 SSE 인프라(<code>agents.py:193-225</code>)를 status 전반으로 확장하면 3중 폴링 제거 가능(<code>usePipelineStatus.ts:238-245</code> 의 TODO 주석과 일치).</li>
+</ol>
+<hr />
+<h2 id="4-70-ui-0">④ 완성도 추정: <strong>약 70%</strong> (유한 파이프라인 UI 기준 풍부, 무한엔진 연동 0%)</h2>
+<h3 id="_1">근거 — 풍부한 부분 (완성)</h3>
+<ul>
+<li>백엔드 라우터 <strong>20+개</strong> 등록(<code>main.py:113-133</code>): status/experiment/agents/selectivity/static 외 admet/analysis/validation/cluster/stability/benchmark/wetlab/flexpepdock/binding_pocket/strategies/silo_a 등.</li>
+<li>프론트 <strong>15개 페이지 라우트</strong> + <strong>40+ 컴포넌트</strong> (<code>frontend/src/App.tsx:277-364</code>, <code>frontend/src/components/</code> 다수).</li>
+<li>핵심 모니터링 기능 작동: StatusEmitter 원자 쓰기, mtime 캐시 폴링, candidate 6-field enrichment, 아카이브 자동 보존, Mol* 4-mode 3D 뷰어, 에이전트 SSE 스트림, 셀렉티비티 receptor 관리, 실험 start/stop/watchdog.</li>
+<li>테스트 자산 존재: <code>backend/tests/</code> 18개, <code>frontend/src/**/__tests__/</code> 10+개.</li>
+</ul>
+<h3 id="_2">근거 — 미완성 / 단절 (핵심 감점)</h3>
+<ul>
+<li><strong>무한엔진 미연결 (검증 완료)</strong>:</li>
+<li><code>grep -rn "discovery" backend/</code> → <strong>0건</strong>.</li>
+<li><code>grep -rn "discovery" frontend/src/</code> → <strong>0건</strong>.</li>
+<li><code>grep -rn "api/discovery"</code> (py/ts/tsx) → <strong>0건</strong>.</li>
+<li>즉 <code>backend/main.py</code> 라우터 목록(<code>main.py:113-133</code>)에 <code>/api/discovery/*</code> <strong>없음</strong>.</li>
+<li>반면 무한엔진 출력 파일은 실재: <code>runs/pyrosetta_flow/discovery_status.json</code>(21KB, 키: <code>running, epochs_done, elapsed_seconds, global_best_delta_margin, passing_count, diversity_level, top, last_epoch, history</code>), <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code>(25KB), 제어 파일 <code>_workspace/discovery_control.json</code> — <strong>모두 어떤 라우터도 읽지 않음</strong>.</li>
+<li>엔진 본체 <code>pyrosetta_flow/continuous.py</code> 는 존재(웹과 독립 실행).</li>
+<li>결론: <strong>무한 발굴 엔진은 웹 UI 와 완전히 분리되어 있으며, 현재 웹에서 무한엔진 상태를 보거나 제어할 방법이 없다.</strong></li>
+<li><code>MEMORY.md</code> 가 UI goal 을 "차기 GOAL(미착수)"로 명시.</li>
+</ul>
+<hr />
+<h2 id="5-ux">⑤ 학술적 가치 (과학 모니터링 UX)</h2>
+<ul>
+<li><strong>계산과학 재현성 UX</strong>: run → 자동 아카이브(JSON+PDB 사본) → <code>switchRun</code> 으로 과거 run 재조회(<code>usePipelineStatus.ts:298-326</code>, <code>status_emitter.py:397-425</code>)는 <em>in-silico</em> 실험의 재현성·감사 추적을 UI 레벨에서 구현한 사례.</li>
+<li><strong>휴리스틱 정직성</strong>: enrichment 6필드 중 sequence-only 추정치(fwkt_contact, chelator_site)를 HEURISTIC 으로 라벨링(<code>status.py:73-76</code>)하고, FE 가 fail reason 을 과학적 한국어 설명으로 변환(<code>CandidateTable.tsx:13-54</code>) — "계산 불가능을 가능한 척하지 않는다"는 프로젝트 원칙(CLAUDE.md VR-cycle-09)의 UX 구현.</li>
+<li><strong>다중 표현 분자 시각화</strong>: Mol* 4-mode(complex/cartoon/ball&amp;stick/surface) preset(<code>MoleculeViewer.tsx:240-265</code>)으로 SSTR2-펩타이드 복합체의 결합 인터페이스 검토 지원.</li>
+<li><strong>에이전트 의사결정 투명성</strong>: planner hypothesis / critic proposed_changes(old→new+rationale) / reporter summary 를 패널로 노출(<code>AgentMonitor.tsx:119-191</code>) — agentic 과학 파이프라인의 의사결정 과정 가시화.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법 (기동)</h2>
+<blockquote>
+<p>미검증: 아래 명령은 <code>backend/main.py:7</code>, <code>frontend/package.json:7</code>, <code>vite.config.ts:14-21</code> 기반 추론. 실제 실행 로그는 본 분석 범위 밖.</p>
+</blockquote>
+<p><strong>백엔드 (포트 8787)</strong>:</p>
+<pre><code># 레포 루트(ai4sci-kaeri)에서
+uvicorn backend.main:app --host 0.0.0.0 --port 8787 --reload   # backend/main.py:7
+# 또는
+python -m backend.main                                          # backend/main.py:142-144
+</code></pre>
+<ul>
+<li>상태 파일 경로 override: <code>PIPELINE_STATUS_FILE=/tmp/pipeline_local_status.json</code> (<code>state.py:40-45</code>).</li>
+<li>모델 목록은 vLLM <code>localhost:8000</code> 가 떠 있어야 정상(없으면 ollama→default 폴백) (<code>experiment.py:163-189</code>).</li>
+</ul>
+<p><strong>프론트엔드 (포트 5173, Vite dev)</strong>:</p>
+<pre><code>cd frontend
+npm install
+npm run dev          # vite — package.json:7
+</code></pre>
+<ul>
+<li>Vite dev 서버가 <code>/api</code> 요청을 <code>http://127.0.0.1:8787</code> 로 프록시 (<code>vite.config.ts:14-21</code>).</li>
+<li>프로덕션: <code>npm run build</code> → <code>npm run preview</code> (<code>package.json:8,10</code>).</li>
+</ul>
+<p><strong>브라우저</strong>: <code>http://localhost:5173</code> 접속 → <code>/</code> 가 <code>/console</code> 로 리다이렉트 (<code>App.tsx:278</code>).</p>
+<hr />
+<h2 id="7-why">⑦ 필요 이유 (Why)</h2>
+<ul>
+<li>agentic <em>in-silico</em> 스크리닝은 수십~수백 epoch/iteration·다수 후보를 생성 → CLI 로그만으로는 수렴 추세·후보 랭킹·게이트 통과율·3D 결합 구조를 실시간 파악 불가. 웹 UI 는 이를 <strong>단일 화면 모니터링</strong>으로 압축.</li>
+<li>파이프라인(컴퓨트, <code>bio-tools</code> conda)과 표현(웹)을 <strong>JSON 파일로 디커플링</strong>(<code>status_emitter.py:30-34</code>)함으로써, GPU 워커 환경과 무관하게 어디서든 브라우저로 관찰·제어(start/stop) 가능.</li>
+<li>그러나 ④에서 확인했듯 <strong>무한 발굴 엔진(현 프로젝트의 핵심 산출물)은 아직 이 모니터링 체계 밖에 있어</strong>, 무한엔진을 웹에 연결하는 것이 UI goal 의 존재 이유이자 다음 우선순위다.</li>
+</ul>
+<hr />
+<h2 id="file_pathline">검증 인용 목록 (file_path:line)</h2>
+<p><strong>백엔드</strong>
+- <code>backend/main.py:7</code> — uvicorn 기동 커맨드 (docstring)
+- <code>backend/main.py:45-135</code> — create_app, 라우터 등록 20+개
+- <code>backend/main.py:65-70</code> — CORS (5173/8787)
+- <code>backend/main.py:73-108</code> — 표준 에러 핸들러
+- <code>backend/main.py:113-133</code> — 라우터 목록(discovery 부재 근거)
+- <code>backend/main.py:139,142-144</code> — module-level app, <strong>main</strong>
+- <code>backend/status_emitter.py:30-34</code> — STATUS_FILE 경로(/tmp/pipeline_local_status.json)
+- <code>backend/status_emitter.py:42-56</code> — DEFAULT_STEPS 13개(유한 파이프라인)
+- <code>backend/status_emitter.py:58-64</code> — DEFAULT_AGENTS 5개
+- <code>backend/status_emitter.py:91-114</code> — 상태 dict 스키마
+- <code>backend/status_emitter.py:117-133</code> — flush() flock 원자 쓰기
+- <code>backend/status_emitter.py:199-224</code> — set_candidates 병합·ddG 재랭크
+- <code>backend/status_emitter.py:397-425</code> — _save_archive(PDB 사본 포함)
+- <code>backend/state.py:40-49</code> — STATUS_FILE/ARCHIVE_DIR env
+- <code>backend/state.py:56</code> — PORT 8787
+- <code>backend/state.py:71-90</code> — atomic_write_json
+- <code>backend/state.py:101-124</code> — _with_runtime_fields(is_active_run/server_time)
+- <code>backend/state.py:127-153</code> — read_status mtime 캐시
+- <code>backend/routers/status.py:39-57</code> — selectivity margin lookup
+- <code>backend/routers/status.py:60-164</code> — _enrich_candidates 6필드(휴리스틱 라벨 73-76)
+- <code>backend/routers/status.py:157-164</code> — GET /api/status
+- <code>backend/routers/status.py:187-225</code> — /api/runs, /api/runs/{run_id}
+- <code>backend/routers/experiment.py:30-31,112-142</code> — watchdog
+- <code>backend/routers/experiment.py:34-70,296-317</code> — _auto_archive
+- <code>backend/routers/experiment.py:84-98,273</code> — initializing status
+- <code>backend/routers/experiment.py:163-189</code> — /experiment/models(vLLM→ollama→default)
+- <code>backend/routers/experiment.py:205-293</code> — POST /experiment/run(subprocess)
+- <code>backend/routers/agents.py:40-47</code> — SSE 에이전트 6종
+- <code>backend/routers/agents.py:60-75,111-114</code> — 로그 경로·path traversal 방어
+- <code>backend/routers/agents.py:133-173</code> — _tail_log_file
+- <code>backend/routers/agents.py:176-181</code> — GET /agents/{run_id}/log
+- <code>backend/routers/agents.py:193-225</code> — GET /agents/{run_id}/stream (SSE)
+- <code>backend/routers/static.py:20-39</code> — GET /api/structures/{rel_path} (.pdb)
+- <code>backend/routers/static.py:42-60</code> — GET /api/images/{rel_path}
+- <code>backend/routers/selectivity.py:39-68</code> — /selectivity/receptors
+- <code>backend/routers/selectivity.py:71-93</code> — /selectivity/upload
+- <code>backend/routers/selectivity.py:96-115</code> — /selectivity/structure/{name} (CIF/PDB)
+- <code>backend/routers/selectivity.py:120</code> — _JOBS in-memory</p>
+<p><strong>프론트엔드</strong>
+- <code>frontend/src/hooks/usePipelineStatus.ts:170-236</code> — parseStatusData(snake→camel)
+- <code>frontend/src/hooks/usePipelineStatus.ts:238-245</code> — 폴링 중복 NOTE
+- <code>frontend/src/hooks/usePipelineStatus.ts:262-296</code> — fetchLiveStatus(/api/status)
+- <code>frontend/src/hooks/usePipelineStatus.ts:274-283</code> — no_status_file 리셋
+- <code>frontend/src/hooks/usePipelineStatus.ts:298-326</code> — switchRun(/api/runs/{id})
+- <code>frontend/src/hooks/usePipelineStatus.ts:329-343</code> — 2s setInterval 폴링
+- <code>frontend/src/hooks/useExperiment.ts:53-141</code> — config/models/start/stop/3s 폴링
+- <code>frontend/src/components/MoleculeViewer.tsx:50-91</code> — Mol* init/PDB 로드
+- <code>frontend/src/components/MoleculeViewer.tsx:240-265</code> — view mode preset 매핑
+- <code>frontend/src/components/AgentMonitor.tsx:119-191</code> — ReportPanel(plan/critic/reporter)
+- <code>frontend/src/components/CandidateTable.tsx:13-54</code> — humanizeFailReason(과학적 설명)
+- <code>frontend/src/components/ConvergenceGraph.tsx:56-60</code> — 빈 데이터 가드
+- <code>frontend/src/pages/SelectivityExplorerPage.tsx:423-447</code> — pdb_path→/api/structures URL
+- <code>frontend/src/App.tsx:277-364</code> — 15개 라우트
+- <code>frontend/vite.config.ts:14-21</code> — /api → 127.0.0.1:8787 프록시
+- <code>frontend/package.json:7,8,10</code> — dev/build/preview 스크립트
+- <code>frontend/package.json:20</code> — molstar ^5.6.1</p>
+<p><strong>무한엔진 미연결 근거 (grep/ls 검증)</strong>
+- <code>grep -rn "discovery" backend/</code> → 0건
+- <code>grep -rn "discovery" frontend/src/</code> → 0건
+- <code>grep -rn "api/discovery"</code> (py/ts/tsx) → 0건
+- <code>runs/pyrosetta_flow/discovery_status.json</code> (21KB, 실재, 미소비)
+- <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code> (25KB, 실재, 미소비)
+- <code>_workspace/discovery_control.json</code> (실재, 웹 제어 경로 없음)
+- <code>pyrosetta_flow/continuous.py</code> (엔진 본체, 웹 독립 실행)
+- <code>MEMORY.md</code> sstr2-ui-goal — UI goal "미착수" 명시</p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

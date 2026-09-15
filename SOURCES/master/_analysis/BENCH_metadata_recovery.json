@@ -1,0 +1,82 @@
+{
+  "overall_raw": -0.2994851291075538,
+  "overall_meta": 0.757755627241611,
+  "mod_raw": -0.5680744279950957,
+  "mod_meta": 0.5645127977248883,
+  "modmap": {
+    "Octreotide": [
+      "d_amino_acid"
+    ],
+    "Octreotate (TATE)": [
+      "d_amino_acid"
+    ],
+    "DOTATATE": [
+      "d_amino_acid"
+    ],
+    "Lanreotide": [
+      "d_amino_acid"
+    ],
+    "Pasireotide": [
+      "d_amino_acid"
+    ],
+    "Bivalirudin": [
+      "d_amino_acid"
+    ],
+    "Liraglutide": [
+      "fatty_acid"
+    ],
+    "Semaglutide": [
+      "fatty_acid"
+    ]
+  },
+  "detail": [
+    {
+      "name": "Octreotide",
+      "lit": 1.67,
+      "raw": 0.039,
+      "meta": 1.372
+    },
+    {
+      "name": "Octreotate (TATE)",
+      "lit": 1.67,
+      "raw": 0.04,
+      "meta": 1.397
+    },
+    {
+      "name": "DOTATATE",
+      "lit": 3.5,
+      "raw": 0.04,
+      "meta": 1.397
+    },
+    {
+      "name": "Lanreotide",
+      "lit": 2.0,
+      "raw": 0.04,
+      "meta": 1.397
+    },
+    {
+      "name": "Pasireotide",
+      "lit": 9.5,
+      "raw": 0.02,
+      "meta": 0.607
+    },
+    {
+      "name": "Liraglutide",
+      "lit": 13.0,
+      "raw": 0.027,
+      "meta": 76.064
+    },
+    {
+      "name": "Semaglutide",
+      "lit": 165.0,
+      "raw": 0.02,
+      "meta": 46.163
+    },
+    {
+      "name": "Bivalirudin",
+      "lit": 0.42,
+      "raw": 0.034,
+      "meta": 1.178
+    }
+  ]
+}

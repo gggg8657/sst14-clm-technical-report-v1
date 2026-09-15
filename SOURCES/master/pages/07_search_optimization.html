@@ -1,0 +1,185 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🔍 탐색 최적화 (Bandit/BO/수렴) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html" class="active">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="07-thompson-bandit">07. 탐색 최적화 — Thompson Bandit + 베이지안 최적화 + 수렴 감지</h1>
+<p><strong>대상 모듈</strong>
+- <code>pyrosetta_flow/bandit.py</code> — Thompson Sampling 위치 밴딧 (<code>PositionBandit</code>)
+- <code>pyrosetta_flow/bayesian_optimizer.py</code> — GP 베이지안 최적화 (<code>BayesianPeptideOptimizer</code>)
+- <code>pyrosetta_flow/convergence.py</code> — Mann-Whitney U 수렴 감지 (<code>ConvergenceDetector</code>)
+- <code>pyrosetta_flow/adapter.py</code> — warm-start 래퍼 (<code>get_bandit_guidance</code> / <code>initialize_from_history</code>)</p>
+<p><strong>성격</strong>: 본 클러스터는 후보를 "더 빨리·더 똑똑하게 고르도록" 돕는 <strong>탐색 가속(인프라) 계층</strong>이다. 결과의 과학적 정당성(ddG·선택성·독성)은 별도 스코어링/가드 계층이 책임진다. 즉 이 모듈들은 Action Item(과학적 결론)에 <strong>직접 무관</strong>할 가능성이 높다 — 자세한 근거는 §3, §7.</p>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="1-a-thompson-sampling-banditpy">1-A. Thompson Sampling 위치 밴딧 (<code>bandit.py</code>)</h3>
+<p><strong>실제 구현 (stub 아님).</strong> 각 변이 가능 위치를 하나의 "암(arm)"으로 보고 Beta(α, β) 분포를 유지한다.</p>
+<ul>
+<li>변이 가능 위치는 1-indexed로 <code>[1, 2, 4, 5, 6, 11, 12, 13]</code> 고정 (<code>bandit.py:24</code>). 즉 Cys3·Cys14(SS bond)와 Trp8·Lys9·Thr10(FWKT pharmacophore 핵심부 일부)은 암 집합에서 제외 — 도메인 제약이 위치 후보 자체에 반영됨.</li>
+<li><strong>히스토리 부트스트랩</strong> (<code>bandit.py:49-100</code>): <code>record_type=="candidate"</code>, <code>status=="success"</code>, ddG가 <code>[-60, 200]</code> plausible 범위 내(<code>bandit.py:26-27, 60-61</code>)인 레코드만 사용. WT(<code>AGCKNFFWKTFTSC</code>) 관측이 있으면 그 평균을, 없으면 전체 ddG의 중앙값을 baseline으로 삼음(<code>bandit.py:74-78</code>). 각 후보에서 WT 대비 바뀐 위치를 식별(<code>bandit.py:86-90</code>)하고, ddG가 baseline보다 <strong>낮으면(개선) 해당 위치들의 α를 +1</strong>, 아니면 <strong>β를 +1</strong> (<code>bandit.py:95-100</code>).</li>
+<li><strong>위치 선택</strong> (<code>sample_focus_positions</code>, <code>bandit.py:102-115</code>): 각 암의 Beta 분포에서 <code>random.betavariate(α, β)</code>로 표본을 뽑고(<code>bandit.py:110</code>) 표본값 상위 n개 위치를 반환. → 정통 Thompson Sampling (posterior sampling 기반 탐색-활용 균형). <code>rng</code> 주입 가능해 재현성 확보.</li>
+<li>온라인 갱신 <code>update</code>(<code>bandit.py:117-124</code>)와 진단용 <code>get_arm_stats</code>(기댓값 α/(α+β), 관측수)(<code>bandit.py:126-137</code>) 제공.</li>
+</ul>
+<blockquote>
+<p>주의: 개선/악화를 <strong>이진(Bernoulli)</strong> 으로만 본다. ddG가 1점 좋아진 것과 50점 좋아진 것을 동일하게 α+1 처리 — 개선 폭(magnitude)은 무시. 또한 다중 위치가 동시에 바뀐 후보는 <strong>credit assignment</strong>가 모든 변이 위치에 균등 분배되어, 어느 위치가 실제 기여했는지 구분 불가(<code>bandit.py:96-100</code>). 알고리즘 자체는 정상이나 신호 해상도는 거친 편.</p>
+</blockquote>
+<h3 id="1-b-gp-bayesian_optimizerpy">1-B. GP 베이지안 최적화 (<code>bayesian_optimizer.py</code>)</h3>
+<p><strong>실제 구현 (stub 아님).</strong> 단, BoTorch 유무에 따라 2단 폴백.</p>
+<ul>
+<li><strong>임베딩 계층 (pluggable)</strong>: <code>PeptideEmbedder</code> ABC(<code>bayesian_optimizer.py:61-90</code>) 아래</li>
+<li><code>OneHotEmbedder</code> — 잔기당 20-dim one-hot 연결, <code>max_len</code> 패딩(<code>:96-130</code>). 외부 의존 없음. <strong>실제로 runner가 사용하는 임베더</strong>(<code>runner.py:479</code>).</li>
+<li><code>ESM2Embedder</code> — transformers/torch 필요, mean-pool last hidden state(<code>:136-183</code>). 실제 구현이나 runner에서 미사용(설치 의존).</li>
+<li><strong>GP 대리모델</strong>:</li>
+<li>BoTorch 가용 시 <code>SingleTaskGP</code> × 목적함수 개수 → <code>ModelListGP</code>, <code>fit_gpytorch_mll</code>로 marginal likelihood 최적화(<code>:362-372</code>).</li>
+<li>미가용 시 <code>_FallbackGP</code> — numpy만으로 RBF 커널 GP를 직접 구현(커널 행렬 역행렬 <code>np.linalg.inv</code>, 예측 평균/분산)(<code>:189-246</code>). 정식 GP 회귀식 그대로 — <strong>stub이 아니라 축소판 정식 구현</strong>.</li>
+<li><strong>획득함수(acquisition)</strong>:</li>
+<li>BoTorch 경로: qNEHVI를 import는 하나(<code>:33-35</code>), 실제 <code>_acquisition_botorch</code>는 <strong>posterior 평균의 ref point 대비 개선량 곱(product-of-improvements)</strong> 을 쓰는 <strong>경량 프록시</strong>다(<code>:516-531</code>). 주석에도 "full qNEHVI is expensive for large sets"라고 명시(<code>:516-517</code>). → 즉 진짜 qNEHVI hypervolume 계산은 <strong>수행하지 않음</strong>.</li>
+<li>폴백 경로: 목적별 UCB(<code>mean + 2.0·√var</code>) 합산(<code>:533-550</code>).</li>
+<li><strong>제안 생성</strong> <code>suggest</code>(<code>:386-428</code>): reference_seq에 대해 허용 위치마다 19개 단일점 변이를 전부 enumerate(<code>_enumerate_mutations</code>, <code>:430-464</code>)하고 획득값 상위 n개 반환.</li>
+<li>목적함수: runner에서 <code>["ddg"(최소화), "ecr_score"(최대화)]</code>로 설정(<code>runner.py:480-482</code>); 최소화 목적은 부호 반전으로 항상 최대화 문제로 변환(<code>:316-320</code>).</li>
+</ul>
+<blockquote>
+<p>통합 깊이 주의: scoring_pipeline에서 BO는 <code>fit</code>→<code>suggest</code>만 호출하고 <strong>그 제안을 다음 후보 생성에 피드백하지 않는다.</strong> 코드 주석이 명시: "Step 4: Bayesian Optimization suggest (부수효과 없음 — 로그만)"(<code>scoring_pipeline.py:246</code>), 결과는 <code>BO suggest top-3 positions: ...</code> 출력에 그침(<code>scoring_pipeline.py:270-274</code>). 즉 BO는 현재 <strong>관찰자/로깅 모드</strong>로만 작동하며 탐색 루프를 실제로 조향하지 않는다.</p>
+</blockquote>
+<h3 id="1-c-mann-whitney-u-convergencepy">1-C. Mann-Whitney U 수렴 감지 (<code>convergence.py</code>)</h3>
+<p><strong>실제 구현 (stub 아님), scipy 무의존.</strong></p>
+<ul>
+<li><code>_rank_data</code>(<code>convergence.py:14-27</code>): 동점 평균 순위 처리 포함한 순위 부여 — 정석.</li>
+<li><code>_mann_whitney_u</code>(<code>:30-59</code>): U 통계량 = R1 − n1(n1+1)/2, n_total ≥ 8일 때 연속성 보정 없는 정규근사(μ=n1·n2/2, σ=√(n1·n2·(N+1)/12)), 양측 p값 = 2·(1−Φ(z))(<code>:50-58</code>). n_total&lt;8이면 보수적으로 1.0 반환(데이터 부족)(<code>:47-48</code>). Φ는 <code>math.erf</code> 기반 정규 CDF(<code>:62-64</code>). → 교과서 정규근사 정확. (동점 분산 보정 항은 생략 — 동점 많을 때 약간 보수적.)</li>
+<li><code>ConvergenceDetector.is_converged</code>(<code>:79-143</code>): 최근 window와 직전 window의 top-k ddG를 비교. 수렴 판정 = <strong>(p &gt; 유의수준, 즉 더이상 유의한 개선 없음) AND (변동계수 CV &lt; 0.15)</strong> 동시 충족(<code>:126-129</code>). 최소 <code>2·window_size</code> iteration 필요(<code>:94-99</code>). 사람이 읽을 권고 문자열 생성.</li>
+</ul>
+<blockquote>
+<p><strong>중요(통합)</strong>: runner는 매 iteration <code>add_iteration</code>→<code>is_converged</code>로 플래그를 계산하고 emitter로 보고(<code>runner.py:906-924</code>, <code>1287-1293</code>)하지만, 메인 iteration 루프(<code>runner.py:508</code>)에는 <code>conv_flag</code> 기반 <code>break</code>가 <strong>없다</strong>. 즉 수렴 감지는 <strong>자문(advisory)·UI 표시용</strong>일 뿐 루프를 조기 종료시키지 않는다. (별도의 <em>validation</em> 단계 early-stop은 CV 기반으로 존재하나 — <code>runner.py:1368-1376</code> — 이는 최종 후보 다중시행 검증용이지 본 수렴감지기와 무관.)</p>
+</blockquote>
+<hr />
+<h2 id="2-warm-start">② 영향 (탐색 효율 / warm-start)</h2>
+<ul>
+<li><strong>warm-start</strong>: <code>get_bandit_guidance</code>(<code>adapter.py:113-128</code>)가 prior_records로 밴딧을 부트스트랩해 <code>focus_positions</code>를 산출. runner는 <strong>Planner가 focus_positions를 비워둔 경우에만</strong> 밴딧 추천으로 채운다(<code>runner.py:592-593</code>, <code>if bandit_guidance and not guidance.get("focus_positions")</code>). → LLM Planner 우선, 밴딧은 데이터 기반 <strong>폴백</strong>. 무한 발굴 엔진의 글로벌 리더보드 warm-start(<code>runner.py:498</code>)와 함께 "이전 실행 지식 재사용" 축을 형성.</li>
+<li><strong>탐색 효율</strong>: 밴딧은 과거에 개선을 많이 낸 위치로 변이 예산을 편향 → 무작위 위치 대비 수렴 가속 기대. 다만 §1-A의 거친 credit assignment·이진화로 신호가 약해질 수 있음.</li>
+<li><strong>BO 영향은 현재 미미</strong>: §1-B대로 제안이 루프에 피드백되지 않아(로깅만), 실측 탐색 효율 기여는 사실상 0에 가깝다. 향후 <code>suggest</code> 결과를 후보 풀에 주입하면 영향이 생김.</li>
+<li><strong>수렴 감지 영향</strong>: 조기 종료가 아니라 "그만둘 만하다"는 신호 제공 → 사람/상위 오케스트레이터의 의사결정 보조. 계산 예산 절감 효과는 현재 자동화되어 있지 않음.</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<p><strong>직접 무관 (탐색 가속은 인프라 계층)</strong> — 근거:</p>
+<ol>
+<li>이 모듈들은 <strong>어떤 후보가 SSTR2 선택적·저독성인지</strong>를 결정하지 않는다. 그 판정은 ddG 계산(PyRosetta)·선택성 루프(<code>selectivity_loop</code>)·약리학 가드(<code>pharmacology_guards.py</code>)가 한다. 밴딧/BO/수렴은 "그 판정 대상을 <strong>어떤 순서로 얼마나 빨리</strong> 고를지"만 다룬다.</li>
+<li>코드 자체가 자신을 보조 역할로 선언: 밴딧은 Planner 미지정 시 폴백(<code>runner.py:592</code>), BO는 "부수효과 없음 — 로그만"(<code>scoring_pipeline.py:246</code>), 수렴은 break 없는 advisory(<code>runner.py:508</code> 루프에 미반영).</li>
+<li>따라서 과학적 결론(Action Item)을 바꾸지 않으며, 제거해도 결과의 <strong>정확성</strong>은 변하지 않고 <strong>속도/예산</strong>만 영향 받는다.</li>
+</ol>
+<p>→ Action Item과의 연결고리는 <strong>간접적</strong>: "동일 예산으로 더 좋은 후보에 도달할 확률을 높인다"는 효율 축에서만 기여.</p>
+<hr />
+<h2 id="4">④ 완성도 % + 근거</h2>
+<table>
+<thead>
+<tr>
+<th>모듈</th>
+<th>완성도</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bandit.py</code> (Thompson)</td>
+<td><strong>90%</strong></td>
+<td>부트스트랩·표본·갱신·진단 모두 실구현, rng 주입 재현성, 도메인 위치 제약 반영. 통합도 활성(<code>runner.py:592</code>). 감점: 이진화로 개선폭 무시, 다중변이 credit assignment 미분리(<code>bandit.py:96-100</code>). 전용 테스트 다수 존재(<code>tests/test_bandit.py</code>).</td>
+</tr>
+<tr>
+<td><code>bayesian_optimizer.py</code> (GP/BO)</td>
+<td><strong>65%</strong></td>
+<td>GP(BoTorch+numpy 폴백)·임베더·enumerate·suggest 실구현. 단 (a) qNEHVI는 import만, 실제는 product-of-improvements <strong>프록시</strong>(<code>:516-531</code>); (b) suggest 결과가 루프에 <strong>미피드백</strong>(<code>scoring_pipeline.py:246</code>, 로깅만). 즉 "구현됐으나 미배선".</td>
+</tr>
+<tr>
+<td><code>convergence.py</code> (Mann-Whitney)</td>
+<td><strong>85%</strong></td>
+<td>순위·U·정규근사·CV 게이트 정석 구현, scipy 무의존. 감점: 동점 분산보정 항 생략, 그리고 <strong>조기종료 미배선</strong>(advisory only, <code>runner.py:508</code> 루프에 break 없음). 전용 테스트 존재(<code>tests/test_convergence.py</code>).</td>
+</tr>
+<tr>
+<td><code>adapter.get_bandit_guidance</code></td>
+<td><strong>95%</strong></td>
+<td>얇은 래퍼, 예외 비치명 처리(<code>runner.py:467-468</code>), Planner 포맷 호환.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>클러스터 종합 ≈ 80%</strong> (알고리즘 구현 품질은 높음, 일부는 "구현 후 미배선"이라 운영 기여가 잠재 상태).</p>
+<hr />
+<h2 id="5-bobandit">⑤ 학술 가치 (BO/bandit의 단백질 설계 적용 의의)</h2>
+<ul>
+<li><strong>Thompson Sampling을 잔기 위치 선택에 적용</strong>: 서열 공간은 조합폭발(14aa × 20AA)이라 전수 탐색 불가. 위치별 Beta-Bernoulli 밴딧은 "어느 위치를 건드릴 때 개선 확률이 높은가"를 posterior로 학습 — 위치 수준 탐색-활용 균형을 경량으로 제공하는 합리적 모델링. 단백질 변이 설계에서 밴딧 기반 위치 우선순위화는 문헌적으로 타당한 접근.</li>
+<li><strong>GP 기반 다목적 BO (qNEHVI 지향)</strong>: ddG-선택성 등 상충 목적의 Pareto 전선을 surrogate로 탐색하는 것은 wet-lab/도킹 비용이 큰 펩타이드 설계에서 sample-efficiency를 높이는 표준 패러다임. ESM-2 임베딩 옵션은 서열 유사도를 잠재공간 거리로 환원해 GP 커널에 의미 부여 — 최신 PLM+BO 결합 흐름과 정합.</li>
+<li><strong>scipy 무의존 Mann-Whitney U + CV 이중 게이트</strong>: 단순 best값 추적이 아니라 분포 수준(중앙 경향 변화 없음 + 저변동)에서 plateau를 통계적으로 판정 — 노이즈 큰 ddG 시계열에 대해 과적합 없는 정지 규칙. 재현성·이식성(외부 의존 0) 측면에서 실용적.</li>
+<li><strong>종합 의의</strong>: "큰 LLM Planner + 데이터 기반 밴딧/BO 폴백 + 통계적 수렴"의 하이브리드는, 비싼 물리 시뮬레이션(PyRosetta) 호출 예산을 통계적으로 절약하려는 active-learning형 설계로서 방법론적 가치가 있다. 다만 가치 실현은 BO 피드백·수렴 조기종료의 <strong>배선 완성</strong>에 달려 있음.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<p><strong>밴딧 (직접)</strong></p>
+<pre><code class="language-python">from pyrosetta_flow.bandit import PositionBandit
+bandit = PositionBandit()                 # 기본 위치 [1,2,4,5,6,11,12,13]
+bandit.initialize_from_history(records)   # experiment_log 레코드 리스트
+focus = bandit.sample_focus_positions(n=3)
+</code></pre>
+<p><strong>밴딧 (runner 통합 래퍼)</strong> — <code>adapter.get_bandit_guidance(records, n_focus=3)</code> → <code>{"focus_positions": [...], "source": "bandit_thompson", "arm_stats": {...}}</code>. runner는 Planner가 focus를 비웠을 때만 사용(<code>runner.py:592-593</code>).</p>
+<p><strong>베이지안 최적화</strong></p>
+<pre><code class="language-python">from pyrosetta_flow.bayesian_optimizer import BayesianPeptideOptimizer, OneHotEmbedder
+bo = BayesianPeptideOptimizer(
+    embedder=OneHotEmbedder(max_len=14),
+    objectives=[&quot;ddg&quot;, &quot;ecr_score&quot;],
+    maximize=[False, True],
+)
+bo.fit(obs_dicts)                          # [{&quot;sequence&quot;,&quot;ddg&quot;,&quot;ecr_score&quot;}, ...] (&gt;=2건)
+sugg = bo.suggest(n=3, reference_seq=&quot;AGCKNFFWKTFTSC&quot;)
+</code></pre>
+<p>runner는 <code>_HAS_BO</code> 시 자동 생성(<code>runner.py:476-486</code>)하고 scoring_pipeline가 <code>fit→suggest</code>(현재 로깅 전용).</p>
+<p><strong>수렴 감지</strong></p>
+<pre><code class="language-python">from pyrosetta_flow.convergence import ConvergenceDetector
+det = ConvergenceDetector(window_size=3, significance_level=0.05)
+det.add_iteration(it, top_k_ddgs)
+converged, details = det.is_converged()    # details: p_value, cv, recommendation
+</code></pre>
+<p>runner는 매 iteration 호출·emitter 보고(<code>runner.py:906-924</code>). config 키: <code>convergence_window_size</code>, <code>convergence_significance</code>, <code>bandit_n_focus</code>(<code>schema.py:37-39</code>).</p>
+<hr />
+<h2 id="7-action-item">⑦ 왜 필요한가 (Action Item 무관임에도)</h2>
+<p>이 클러스터는 결론을 바꾸지 않으므로 "없어도 되는 것 아니냐"는 질문이 자연스럽다. 그럼에도 필요한 이유는 <strong>비용 구조</strong> 때문이다.</p>
+<ol>
+<li><strong>물리 시뮬레이션 예산이 병목.</strong> PyRosetta ddG·도킹은 후보당 수초~수분. 서열 공간은 조합폭발이라 무작위/전수 탐색은 같은 예산으로 훨씬 적은 좋은 후보에 도달한다. 밴딧은 변이 예산을 "역사적으로 잘 되는 위치"로 편향해 <strong>동일 예산당 기대 수확을 높인다.</strong> 결론의 정확성이 아니라 <strong>결론에 도달하는 속도·확률</strong>을 다루므로 인프라이며, 무한 발굴 엔진처럼 장기 가동 시 그 누적 효과가 핵심 자산이 된다.</li>
+<li><strong>warm-start = 지식의 망각 방지.</strong> <code>initialize_from_history</code>/글로벌 리더보드는 이전 실행에서 배운 위치 선호를 다음 실행이 상속하게 한다. 이것이 없으면 매 실행이 cold-start로 동일 학습을 반복 — 무한 엔진 설계의 전제(역대 지식 재사용)와 직결.</li>
+<li><strong>정지 규칙 = 예산 낭비 차단.</strong> 수렴 감지는 plateau를 통계적으로 알려, 개선 없는 iteration에 시뮬레이션 예산을 더 쓰는 것을 막는 신호를 준다(현재는 advisory지만 자동 종료로 승격 시 즉시 예산 절감).</li>
+<li><strong>Planner 환각/공백의 안전망.</strong> 밴딧은 LLM Planner가 focus_positions를 못 줄 때의 <strong>데이터 기반 폴백</strong>(<code>runner.py:592</code>)으로, 탐색이 무방향으로 빠지는 것을 방지한다.</li>
+</ol>
+<p>요약: 과학적 <strong>판정</strong>은 스코어링/가드가, 그 판정을 <strong>언제·무엇에 대해 효율적으로 내릴지</strong>는 본 클러스터가 책임진다. Action Item에 직접 기여하지 않지만, 한정된 시뮬레이션 예산을 가진 발굴 파이프라인의 <strong>처리량·지속가능성</strong>을 결정하는 보조 인프라로서 필요하다. 다만 BO 피드백 배선과 수렴 기반 자동 종료가 미완이므로, 현재 실효 기여는 "밴딧 warm-start" 축에 집중되어 있고 BO/수렴은 잠재력 상태임을 밝혀둔다.</p>
+<hr />
+<h2 id="file_pathline">검증 인용 목록 (file_path:line)</h2>
+<ul>
+<li><code>bandit.py:24</code> — 변이 가능 위치 고정 <code>[1,2,4,5,6,11,12,13]</code> (SS bond/pharmacophore 일부 제외)</li>
+<li><code>bandit.py:26-27, 60-61</code> — ddG plausible 범위 필터 <code>[-60, 200]</code></li>
+<li><code>bandit.py:49-100</code> — <code>initialize_from_history</code> 부트스트랩 (baseline·credit·α/β 갱신)</li>
+<li><code>bandit.py:74-78</code> — WT 평균 또는 중앙값 baseline</li>
+<li><code>bandit.py:95-100</code> — 개선/악화 이진 → α/β +1 (magnitude 무시, 다중변이 균등 credit)</li>
+<li><code>bandit.py:102-115</code> — <code>sample_focus_positions</code> (<code>random.betavariate</code> Thompson 표본)</li>
+<li><code>bandit.py:117-137</code> — <code>update</code>/<code>get_arm_stats</code></li>
+<li><code>bayesian_optimizer.py:25-45</code> — BoTorch 선택적 import 가드</li>
+<li><code>bayesian_optimizer.py:96-130</code> — <code>OneHotEmbedder</code> 실구현</li>
+<li><code>bayesian_optimizer.py:136-183</code> — <code>ESM2Embedder</code> 실구현(미배선)</li>
+<li><code>bayesian_optimizer.py:189-246</code> — <code>_FallbackGP</code> numpy RBF GP 정식 구현</li>
+<li><code>bayesian_optimizer.py:362-372</code> — BoTorch <code>SingleTaskGP</code>/<code>ModelListGP</code> fit</li>
+<li><code>bayesian_optimizer.py:430-464</code> — 단일점 변이 enumerate</li>
+<li><code>bayesian_optimizer.py:516-531</code> — qNEHVI 대신 product-of-improvements <strong>프록시</strong></li>
+<li><code>bayesian_optimizer.py:533-550</code> — 폴백 UCB 획득함수</li>
+<li><code>convergence.py:14-27</code> — <code>_rank_data</code> 동점 평균순위</li>
+<li><code>convergence.py:30-59</code> — <code>_mann_whitney_u</code> 정규근사 p값</li>
+<li><code>convergence.py:62-64</code> — <code>math.erf</code> 정규 CDF (scipy 무의존)</li>
+<li><code>convergence.py:94-99</code> — 최소 <code>2·window_size</code> iteration 요구</li>
+<li><code>convergence.py:126-129</code> — 수렴 = (p&gt;유의수준) AND (CV&lt;0.15)</li>
+<li><code>adapter.py:113-128</code> — <code>get_bandit_guidance</code> warm-start 래퍼</li>
+<li><code>runner.py:462-472</code> — 밴딧/수렴 detector 초기화</li>
+<li><code>runner.py:476-486</code> — <code>BayesianPeptideOptimizer</code> 자동 생성(OneHotEmbedder, ddg/ecr_score)</li>
+<li><code>runner.py:508</code> — 메인 iteration 루프 (conv_flag 기반 break 부재)</li>
+<li><code>runner.py:592-593</code> — Planner 미지정 시에만 밴딧 focus 적용 (폴백)</li>
+<li><code>runner.py:906-924, 1287-1293</code> — 수렴 계산·emitter 보고 (advisory)</li>
+<li><code>scoring_pipeline.py:246</code> — "Step 4: BO suggest (부수효과 없음 — 로그만)"</li>
+<li><code>scoring_pipeline.py:249-279</code> — BO <code>fit</code>→<code>suggest</code>, 결과 로깅만</li>
+<li><code>schema.py:37-39</code> — config 키 <code>convergence_window_size</code>/<code>convergence_significance</code>/<code>bandit_n_focus</code></li>
+<li><code>tests/test_bandit.py</code>, <code>tests/test_convergence.py</code> — 전용 단위 테스트 존재</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

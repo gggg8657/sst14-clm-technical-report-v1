@@ -1,0 +1,187 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>✅ QC·검증 & fail-closed · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html" class="active">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="qc-fail-closed">기능 분석 보고서 — QC 랭킹 · 검증 · Fail-Closed 원칙 · 약리학 가드</h1>
+<p>분석 루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+원칙: 모든 주장은 <code>file_path:line</code> 인용. 미확인 항목은 "미검증"으로 명시. 본 분석은 읽기 전용.</p>
+<hr />
+<h2 id="pharmacology_guardspy">⚠️ 핵심 사실 확인 — <code>pharmacology_guards.py</code> 실재 위치</h2>
+<p>CLAUDE.md는 <code>pipeline_local/scripts/pharmacology_guards.py</code> 를 명시하나, <strong>분석 루트(ai4sci-kaeri repo) 안에는 존재하지 않는다.</strong></p>
+<ul>
+<li>분석 루트 내 검색 결과 <code>pipeline_local/</code> 디렉토리 자체가 부재 (전체 트리 검색 0건).</li>
+<li>실제 파일은 <strong>상위 모노레포 루트</strong>에 존재: <code>[LOCAL_PATH]</code> (1248줄).</li>
+<li>분석 루트 코드는 이 모듈을 <strong>문자열 docstring 참조로만</strong> 언급하고, 런타임 import는 하지 않는다.</li>
+<li><code>backend/pharmacophore.py:13</code>, <code>:102</code>, <code>:180</code> — docstring 안내 문구</li>
+<li><code>backend/routers/status.py:75</code> — docstring 안내 문구</li>
+<li><code>attach_confidence</code> / <code>HEURISTIC_FUNCTION_DISCLAIMERS</code> 를 실제 import해 호출하는 런타임 코드는 분석 루트에서 <strong>0건</strong> (<code>grep</code> 확인). 즉 가드의 confidence 주입은 분석 루트 API 응답에 <strong>현재 연결되어 있지 않다(미검증→사실상 미연결)</strong>.</li>
+<li>테스트 <code>backend/tests/test_pharmacophore.py:366</code> 은 <code>from pipeline_local.scripts.pharmacology_guards import HEURISTIC_FUNCTION_DISCLAIMERS</code> 를 수행하며, pytest rootdir이 상위 모노레포(<code>configfile: pyproject.toml</code>, rootdir=<code>SST14-M_scr</code>)이므로 sys.path를 통해 import가 성공한다. 4개 등록 테스트 모두 PASS 확인.</li>
+</ul>
+<p><strong>결론</strong>: 약리학 가드는 <em>모노레포 레벨 공유 자산</em>이며 분석 루트 repo는 이를 <strong>테스트로 검증만</strong> 하고 런타임 적용은 아직 미배선이다.</p>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="a-qc-ag_srcagentsqc_rankerpy">(A) QC 게이트 + 랭킹 — <code>AG_src/agents/qc_ranker.py</code></h3>
+<p><code>QCRankerAgent</code>는 ESMFold pLDDT, FoldMason lDDT, 도킹 점수, Rosetta ΔΔG, 선택성을 하나의 랭킹 테이블로 통합한다 (<code>qc_ranker.py:132-149</code>).</p>
+<p>게이트는 <strong>순차 AND 조건</strong>으로 적용된다 (<code>apply_gates</code>, <code>qc_ranker.py:171-287</code>):</p>
+<ul>
+<li><strong>Gate 1 — pLDDT</strong>: <code>plddt_mean &gt;= 75</code> AND <code>plddt_interface &gt;= 70</code> (<code>qc_ranker.py:203-212</code>)</li>
+<li><strong>Gate 2 — Docking</strong>: dock_score 기준 상위 <code>docking_top_pct%</code>(기본 20%)만 통과 (<code>qc_ranker.py:218-230</code>)</li>
+<li><strong>Gate 3 — Rosetta</strong>: <code>ddg &lt;= rosetta_ddg_max(-5.0)</code> AND <code>clash &lt;= 10</code> AND <code>constraint_violations &lt;= 0</code> (<code>qc_ranker.py:236-248</code>)</li>
+<li><strong>Gate 4 — Selectivity</strong>: <code>selectivity_margin &gt;= sel_margin_min</code>, off-target 한계 검사 (<code>qc_ranker.py:254-273</code>)</li>
+</ul>
+<p>각 게이트는 <code>gates_enabled</code> 플래그로 비활성화 가능하며, 비활성 시 "DISABLED - 전체 통과" 로그를 남긴다 (<code>qc_ranker.py:213-215, 231-233, 249-251, 274-276</code>). 실패 사유는 사람이 읽을 수 있는 문자열로 누적된다 (예: <code>qc_ranker.py:208</code>, <code>:242</code>).</p>
+<p>랭킹은 min-max 정규화 후 가중 합산 (<code>compute_rankings</code>, <code>qc_ranker.py:289-354</code>). dock_score·ddg는 "낮을수록 좋음"이므로 <code>invert=True</code>로 부호 반전 (<code>qc_ranker.py:332-333</code>). 가중치는 <code>DEFAULT_WEIGHTS</code>(<code>qc_ranker.py:109-115</code>) 또는 PyRosetta 전용 모드 <code>PYROSETTA_ONLY_WEIGHTS</code>(ddg 0.70 비중, <code>qc_ranker.py:117-125</code>). 정규화 분모가 0이면(모두 동일값) 1.0으로 처리해 0-division을 회피 (<code>qc_ranker.py:320-321</code>).</p>
+<p>랭킹 모드는 <code>ddg_primary</code>(ddG 오름차순 top-k, <code>qc_ranker.py:370-387, 523-525</code>) 또는 <code>weighted</code>(가중합 top-k) 두 가지 (<code>qc_ranker.py:526-529</code>).</p>
+<h3 id="b-trial-backendvalidationpy">(B) 다중 trial 검증 (통계적 재현성) — <code>backend/validation.py</code></h3>
+<p>사용자가 명시적으로 선택한 후보만 검증하며, 전체 후보를 자동 검증하지 않는다 (<code>backend/validation.py:6-8</code>). 세 가지 통계 검증을 수행한다:</p>
+<ul>
+<li><strong>Rank Stability</strong> (<code>validate_rank_stability</code>, <code>backend/validation.py:53-125</code>): 동일 서열이 여러 (run_id, iteration) 그룹에서 차지한 순위의 표준편차로 안정성 측정. <code>confidence = max(0, 1 - rank_stdev/top_k)</code>, <code>&gt;= 0.7</code>이면 stable (<code>:103-105</code>). 출현 횟수가 <code>min_appearances</code>(기본 2) 미만이면 "Insufficient data"로 confidence 0.0 (<code>:87-101</code>).</li>
+<li><strong>Score Consistency</strong> (<code>validate_score_consistency</code>, <code>:132-223</code>): ddG의 변동계수(CV) 기반. CV가 낮을수록 confidence 높음 (<code>:198</code>). 2σ 초과 이상치(anomalous run)를 별도 식별 (<code>:185-196</code>). 평가 2건 미만이면 confidence 0.0 (<code>:147-165</code>).</li>
+<li><strong>No-Dominance</strong> (<code>validate_no_dominance</code>, <code>:230-346</code>): 후보의 우위가 산물(artifact)인지 점검. <strong>median ddG</strong>(best 아님 — 더 robust, <code>:243-253</code>)로 집계, top-k gap_ratio &gt; 2.0이면 anomalous dominance로 판정 (<code>:280, 311</code>). 재현성(consistently_top + 평가 ≥2)이 있으면 legitimate (<code>:312</code>).</li>
+</ul>
+<p>세 결과를 가중 통합 (<code>_WEIGHTS = {rank 0.4, score 0.4, dominance 0.2}</code>, <code>:353</code>) → <code>RELIABLE / CAUTION / UNRELIABLE</code> 판정 (<code>validate_candidate</code>, <code>:373-378</code>).</p>
+<h3 id="c-fail-closed-999-nan">(C) Fail-Closed 패턴 (실패 → 999 / NaN → 자동 탈락)</h3>
+<p>데이터 부재·실패 시 <strong>나쁜 쪽 기본값</strong>을 주입해 안전하게 탈락시키는 패턴이 광범위하게 사용된다 (ddG는 "낮을수록 좋음"이므로 999 = 자동 실패):</p>
+<ul>
+<li>검증 라우터: <code>ddg = float(cand.get("ddG", 999.0))</code>, <code>clash = ...999.0</code>, 규칙 통과 실패 시 fail (<code>backend/routers/validation.py:53-66</code>).</li>
+<li>성공 판정 게이트: <code>_is_success = status=="success" AND ddg &lt; 900</code> → 999 기본값은 자동 불통과 (<code>backend/validation.py:32-33</code>, <code>backend/analysis.py:45</code>, <code>pyrosetta_flow/ranking.py:50</code>).</li>
+<li>Plausibility 필터(이상치 차단): ddG가 <code>[-60, 200]</code> 밖이면 ranking 전 제거 (<code>backend/validation.py:27-28, 36-38</code>) — devil's advocate 발견에 따른 hardening (<code>:10-13</code>).</li>
+<li>랭킹/집계의 999 기본값: <code>pyrosetta_flow/ranking.py:52, 71</code>, <code>pyrosetta_flow/scoring_pipeline.py:227,234</code>(pareto_rank 999), <code>backend/status_emitter.py:220</code>, <code>backend/routers/status.py:203</code>.</li>
+<li>gnina rescoring 실패 시 <code>float("inf")</code> 주입 (<code>pyrosetta_flow/gnina_rescoring.py:375</code>).</li>
+<li>status 라우터 enrichment: 각 필드 계산을 <code>try/except</code>로 감싸 실패 시 해당 필드를 비워두고 다른 후보 처리를 막지 않음 (graceful degradation, <code>backend/routers/status.py:111-150</code>). 단, 이는 fail-closed가 아니라 fail-open(필드 누락)에 가까움 — 점수 자체는 999 기본값으로 보호.</li>
+</ul>
+<h3 id="d-pipeline_localscriptspharmacology_guardspy">(D) 약리학 가드 (모노레포 자산) — <code>pipeline_local/scripts/pharmacology_guards.py</code></h3>
+<p>stand-alone 선언적 가드. 외부 패키지 import 없이 문헌 정답과 대조만 수행 (<code>pharmacology_guards.py:18-19</code>). 도메인 환각 시나리오 H-01~H-06을 각각 방어 (<code>:9-16</code>):</p>
+<ul>
+<li><strong><code>LITERATURE_VALUES</code></strong> (<code>:56-227</code>): Kyte-Doolittle, Radzicka-Wolfenden(Boman convention), Varshavsky 반감기(종 명시), Lehninger pKa, Ikai 계수, SST14-SSTR2 ref ΔG(Boltz2 −95.024 REU / FlexPepDock 553.857±4.024 REU), modification_conflict_rules(C-01~C-99, 각 화학 근거 문헌 포함)을 <strong>문헌 직접 인용</strong>으로 보관 (<code>:53</code>).</li>
+<li><strong><code>SCALE_RANGES</code></strong> (<code>:234-246</code>): 각 척도의 생물학적 합리 범위 (GATE-C).</li>
+<li><strong><code>SIGN_CONVENTIONS</code></strong> (<code>:613-621</code>): 부호 규약 (H-02, 예: rosetta_total_score NEGATIVE=favorable).</li>
+<li><strong><code>HEURISTIC_FUNCTION_DISCLAIMERS</code></strong> (<code>:253-476</code>): H-06 가드. 휴리스틱 함수의 표면 단위 vs 실제 의미, 한계, 유효/무효 사용, confidence_grade="HEURISTIC"를 강제. <code>backend.pharmacophore.compute_fwkt_contact</code>(<code>:326-339</code>), <code>compute_chelator_site</code>(<code>:340-353</code>) 포함.</li>
+<li><strong>검증 함수</strong>: <code>assert_literature_value</code>(<code>:640-676</code>), <code>audit_table</code>(<code>:679-720</code>), <code>assert_in_range</code>(<code>:723-742</code>), <code>check_sign_convention</code>(<code>:745-772</code>), <code>is_heuristic_function</code>(<code>:479-488</code>).</li>
+<li><strong><code>ENDPOINT_CONFIDENCE</code> + <code>attach_confidence</code></strong> (<code>:790-1248</code>): API 엔드포인트별 신뢰 등급(A/B/C/HEURISTIC)과 경고를 응답 dict에 주입하는 헬퍼. <strong>값 자체는 변경하지 않고 메타데이터만 추가</strong> (<code>:1211-1214</code>). <em>단, 분석 루트 라우터에서 호출되지 않음 (미배선).</em></li>
+</ul>
+<hr />
+<h2 id="2">② 영향 (가짜 점수 차단 = 신뢰성)</h2>
+<ul>
+<li><strong>가짜 점수 자동 탈락</strong>: 실패/데이터 부재가 999로 매핑되어 게이트·랭킹에서 자동 하위로 밀린다. "조용한 성공(silent pass)" 위험을 제거 (<code>backend/routers/validation.py:53-59</code>, <code>backend/validation.py:32-33</code>).</li>
+<li><strong>이상치 차단</strong>: plausibility 필터가 비현실적 ddG(예: 산물 스파이크)를 ranking 전에 제거해 false dominance를 방지 (<code>backend/validation.py:36-38, 230-346</code>).</li>
+<li><strong>재현성 정량화</strong>: 단일 trial 운(luck)이 아니라 다중 seed/iteration 표준편차·CV로 confidence를 매겨, 재현 불가능한 best 후보를 CAUTION/UNRELIABLE로 강등 (<code>backend/validation.py:373-378</code>).</li>
+<li><strong>문헌 환각 차단</strong>: lookup table이 코드 현재값이 아닌 문헌 인용과 대조되므로, 무단 변경·부호 역전·척도 혼용이 회귀 테스트에서 즉시 드러난다 (<code>pharmacology_guards.py:53-54</code>).</li>
+<li><strong>휴리스틱의 정직한 노출</strong>: 표면 단위(예: "hours")가 임상 의미가 아님을 명시해, 순위용 점수를 절대값으로 오인하는 것을 방지 (<code>pharmacology_guards.py:253-256</code>).</li>
+</ul>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<ul>
+<li><strong>Stage 5 — pharmacology guards</strong>: CLAUDE.md Stage 적용 이력에 "2026-05-11 Stage 5 — <code>pipeline_local/scripts/pharmacology_guards.py</code> + 33 회귀 테스트(현재 39개)" 등록됨. 본 분석 시점 실제 회귀 테스트 파일 <code>pipeline_local/tests/test_pharmacology_guards.py</code> 존재 확인. 가드 자체는 구현 완료 상태.</li>
+<li><strong>모노레포-repo 경계 갭 (신규 식별)</strong>: 분석 루트 코드는 가드를 docstring으로만 참조하고 <code>attach_confidence</code>를 런타임 배선하지 않음. CLAUDE.md "디렉토리 침범 금지" 원칙과 충돌 없이 가드를 분석 루트 API에 연결하는 작업이 미완 (미검증→미배선 확정).</li>
+<li><strong>CI Q3-1</strong>: 분석 루트 트리(<code>CLAUDE.md</code>, <code>INTEGRATION_PLAN.md</code>) 내에서 "Q3-1" 식별자 직접 인용을 <strong>찾지 못함 → 미검증</strong>. (분기 회고 <code>_workspace/release/retro-2026-Q2.md</code>에 Q3 Action Items가 식별되어 있다고 CLAUDE.md가 언급하나, 그 파일 내 "Q3-1" 명칭의 CI 항목은 본 분석에서 미확인.)</li>
+<li>VR-cycle-09 (H-06) closure가 <code>HEURISTIC_FUNCTION_DISCLAIMERS</code>로 운영화됨 (<code>pharmacology_guards.py:15-16, 254</code>).</li>
+</ul>
+<hr />
+<h2 id="4">④ 완성도 (%) + 근거</h2>
+<table>
+<thead>
+<tr>
+<th>구성요소</th>
+<th>완성도</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>QC 게이트 + 랭킹 (<code>qc_ranker.py</code>)</td>
+<td><strong>90%</strong></td>
+<td>4개 게이트 + 2개 랭킹 모드 + CSV 출력 + QC 보고서 모두 구현(<code>qc_ranker.py:171-536</code>). pyc 캐시 3종(311/312/313) = 다환경 실행 흔적. selectivity 게이트의 <code>!= 0.0</code> 가드(<code>:260</code>)는 0=미측정과 0=실제값을 구분 못하는 미세 한계.</td>
+</tr>
+<tr>
+<td>다중 trial 검증 (<code>validation.py</code>)</td>
+<td><strong>90%</strong></td>
+<td>3개 검증 + 가중 통합 + plausibility 완비(<code>backend/validation.py:53-427</code>). 라우터 노출(<code>backend/routers/validation.py:132-157</code>) + executor 타임아웃 보호(<code>:101-107</code>).</td>
+</tr>
+<tr>
+<td>Fail-closed 패턴</td>
+<td><strong>85%</strong></td>
+<td>999/inf/plausibility 광범위 적용(다수 파일). 일관성은 높으나 999/900/inf/-999가 파일별로 혼재 — 상수 미통일.</td>
+</tr>
+<tr>
+<td>약리학 가드 모듈 (<code>pharmacology_guards.py</code>)</td>
+<td><strong>95%</strong></td>
+<td>LITERATURE/SCALE/SIGN/HEURISTIC/ENDPOINT 5종 + 6개 검증 함수 1248줄, 39개 회귀 테스트 PASS.</td>
+</tr>
+<tr>
+<td>가드의 분석 루트 런타임 배선</td>
+<td><strong>15%</strong></td>
+<td>docstring 참조만 존재, <code>attach_confidence</code> 호출 0건. 테스트 import만 성공(rootdir sys.path 의존).</td>
+</tr>
+</tbody>
+</table>
+<p>종합 추정: 분석 루트 코어 로직(QC/검증/fail-closed)은 <strong>~88%</strong>, 가드의 실효 통합까지 포함하면 <strong>~70%</strong>.</p>
+<hr />
+<h2 id="5">⑤ 학술 가치 (재현성 / 정직성)</h2>
+<ul>
+<li><strong>재현성</strong>: rank stability(seed 간 순위 표준편차)와 score consistency(ddG CV, 2σ 이상치)를 정량 지표로 보고하는 것은, in-silico 펩타이드 스크리닝에서 흔히 누락되는 "단일 run 우연성" 통제를 명시적으로 수행 (<code>backend/validation.py:53-223</code>). best가 아닌 <strong>median 집계</strong>(<code>:243-253</code>)는 outlier robust 통계 관행에 부합.</li>
+<li><strong>정직성(H-06)</strong>: 휴리스틱 함수의 표면 단위와 실제 의미를 분리 기재하고, valid/invalid 사용을 명문화한 <code>HEURISTIC_FUNCTION_DISCLAIMERS</code>는 "계산 불가능을 계산 가능한 척"하는 과대 주장을 구조적으로 차단 — 방법론 보고의 투명성 측면에서 학술적으로 모범적.</li>
+<li><strong>문헌 추적성</strong>: 모든 lookup 값에 (값, 출처, 코멘트) 3-튜플을 부착(<code>pharmacology_guards.py:48-54</code>)해 데이터 출처 감사를 가능케 함.</li>
+<li><strong>한계의 명시</strong>: selectivity_margin이 실측 Ki와 상관 미검증(Spearman ρ≈−0.3)임을 ENDPOINT_CONFIDENCE 경고로 기록(<code>pharmacology_guards.py:830-834</code>) — 결과 과신을 방지.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<h3 id="qc">QC 랭킹 실행</h3>
+<pre><code class="language-python">from AG_src.agents.qc_ranker import QCRankerAgent
+agent = QCRankerAgent()  # 또는 weights=PYROSETTA_ONLY_WEIGHTS
+result = agent.execute({
+    &quot;candidates&quot;: [...],          # list[Candidate]
+    &quot;thresholds&quot;: {               # gate_thresholds.yaml 대응
+        &quot;esmfold_plddt_min&quot;: 75,
+        &quot;rosetta_ddg_max&quot;: -5.0,
+        &quot;ranking_mode&quot;: &quot;ddg_primary&quot;,
+        &quot;top_k_by_ddg&quot;: 5,
+        &quot;gates_enabled&quot;: {&quot;plddt&quot;: True, &quot;docking&quot;: True, &quot;rosetta&quot;: True, &quot;selectivity&quot;: True},
+    },
+    &quot;run_id&quot;: &quot;run01&quot;, &quot;iteration&quot;: 1, &quot;output_dir&quot;: &quot;...&quot;,
+})
+# result[&quot;top_candidates&quot;], result[&quot;rank_table&quot;], result[&quot;qc_report&quot;]
+</code></pre>
+<p>(<code>qc_ranker.py:487-536</code>)</p>
+<h3 id="trial-api">다중 trial 검증 (API)</h3>
+<pre><code>POST /api/validation/run   {&quot;candidate_sequences&quot;: [&quot;AGCK...&quot;], &quot;top_k&quot;: 3}
+POST /api/validate/selected {&quot;candidate_ids&quot;: [&quot;cand001&quot;], &quot;run_id&quot;: &quot;...&quot;}
+GET  /api/validation/results
+</code></pre>
+<p>(<code>backend/routers/validation.py:112-157</code>) — 결과 <code>RELIABLE/CAUTION/UNRELIABLE</code>.</p>
+<h3 id="_1">약리학 가드 (모노레포 루트에서)</h3>
+<pre><code class="language-python">from pipeline_local.scripts.pharmacology_guards import (
+    assert_literature_value, audit_table, assert_in_range,
+    is_heuristic_function, attach_confidence,
+)
+audit_table(my_kd_table, &quot;kyte_doolittle&quot;)        # 위반 목록 반환(빈 리스트=통과)
+assert_in_range(boman, &quot;boman_index_kcal_per_mol&quot;)
+resp = attach_confidence(api_result, &quot;/admet/{sequence}&quot;)  # confidence_grade 주입
+</code></pre>
+<p>(<code>pharmacology_guards.py:640, 679, 723, 479, 1180</code>) — <strong>주의: 분석 루트 repo가 아닌 상위 모노레포 sys.path 필요.</strong></p>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<p>방사성의약품 후보 스크리닝은 wet-lab 검증 전 단계의 in-silico 점수에 의존한다. 이 점수가 (a) 계산 실패를 성공으로 위장하거나, (b) 단일 run의 우연한 best를 진짜 우위로 오인하거나, (c) lookup table 환각·부호 역전으로 오염되거나, (d) 순위용 휴리스틱을 임상 절대값으로 오용되면, <strong>틀린 후보가 합성·동물실험 단계로 진입해 막대한 자원이 낭비</strong>된다. QC 게이트(품질 하한), 다중 trial 검증(재현성 게이트), fail-closed(실패의 안전한 탈락), 약리학 가드(문헌·부호·범위·휴리스틱 정직성)는 이 네 가지 실패 모드를 각각 차단하는 4중 방어선이다. 이는 파이프라인의 <strong>신뢰성과 학술적 정직성</strong>을 담보하는 핵심 인프라다.</p>
+<hr />
+<h2 id="_2">검증 인용 목록</h2>
+<p><strong>QC 랭킹</strong> — <code>AG_src/agents/qc_ranker.py</code>
+- 게이트 순차 적용: <code>qc_ranker.py:171-287</code> (Gate1 <code>:203-212</code>, Gate2 <code>:218-230</code>, Gate3 <code>:236-248</code>, Gate4 <code>:254-273</code>)
+- 가중치: <code>qc_ranker.py:109-125</code>; 정규화/랭킹: <code>:289-354</code>; 랭킹 모드: <code>:370-387, 523-529</code>; 실행 진입점: <code>:487-536</code></p>
+<p><strong>다중 trial 검증</strong> — <code>backend/validation.py</code>, <code>backend/routers/validation.py</code>
+- plausibility 상수: <code>backend/validation.py:27-29</code>; rank stability <code>:53-125</code>; score consistency <code>:132-223</code>; no-dominance(median) <code>:230-346</code>; 통합 판정 <code>:353-378</code>; batch <code>:397-427</code>
+- 라우터: <code>backend/routers/validation.py:30-66</code>(rule-based), <code>:80-107</code>(math+timeout), <code>:112-157</code>(endpoints)</p>
+<p><strong>Fail-closed (999/NaN/inf)</strong>
+- <code>backend/routers/validation.py:53-66</code>; <code>backend/validation.py:32-33, 36-38</code>; <code>backend/analysis.py:45,50</code>; <code>pyrosetta_flow/ranking.py:50,52,71</code>; <code>pyrosetta_flow/scoring_pipeline.py:227,234</code>; <code>pyrosetta_flow/gnina_rescoring.py:375</code>; <code>backend/status_emitter.py:220</code>; <code>backend/routers/status.py:203</code>
+- graceful degradation enrichment: <code>backend/routers/status.py:60-154</code></p>
+<p><strong>약리학 가드</strong> — <code>pipeline_local/scripts/pharmacology_guards.py</code> (분석 루트 외부, 모노레포 루트)
+- 모듈 헤더/시나리오: <code>:1-37</code>; LITERATURE_VALUES <code>:56-227</code>; SCALE_RANGES <code>:234-246</code>; HEURISTIC_FUNCTION_DISCLAIMERS <code>:253-476</code>(fwkt <code>:326-339</code>, chelator <code>:340-353</code>); SIGN_CONVENTIONS <code>:613-621</code>; 검증 함수 <code>:479-488, 640-772</code>; ENDPOINT_CONFIDENCE/attach_confidence <code>:790-1248</code>(selectivity 경고 <code>:830-834</code>)
+- 분석 루트의 docstring 참조(런타임 미배선): <code>backend/pharmacophore.py:9-13, 102, 180</code>; <code>backend/routers/status.py:73-75</code>
+- 테스트(import 성공, 4 PASS): <code>backend/tests/test_pharmacophore.py:362-401</code>
+- 회귀 테스트 파일 존재: <code>pipeline_local/tests/test_pharmacology_guards.py</code></p>
+<p><strong>미검증 항목 (명시)</strong>
+- "CI Q3-1": 분석 루트 트리에서 식별자 직접 인용 미확인 → 미검증.
+- <code>attach_confidence</code>의 분석 루트 라우터 실런타임 적용: grep 0건 → 사실상 미배선.
+- selectivity 게이트의 0.0=미측정 vs 0.0=실값 구분: 코드상 구분 없음(<code>qc_ranker.py:260</code>) — 한계로 기록.</p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

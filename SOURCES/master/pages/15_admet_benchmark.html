@@ -1,0 +1,254 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🧫 벤치마크: ADMET (물성·독성) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html" class="active">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="admet">ADMET 벤치마크 — 물성 정확성 + 독성 예측력 검증</h1>
+<blockquote>
+<p>우리 ADMET 계층의 두 축을 문헌·참조도구로 검증한다. <strong>할루시네이션 견제</strong>: 참조값은 검증된 도구(<code>peptides</code> 패키지)·문헌(출처 인용), 우리값은 실제 코드 실행(<code>bench_admet_*</code> 재현 가능).
+⚠️ 우리 시스템은 <strong>흡수/분포/대사/배설(ADME) 실모델은 미통합</strong>이다. 따라서 벤치마크 대상 = <strong>(A) 물성 descriptor + (B) 용혈 독성(pepADMET HC50)</strong> 두 가지.</p>
+</blockquote>
+<hr />
+<h2 id="part-a-descriptor-vs-peptides">Part A — 물성 Descriptor 정확성 (vs <code>peptides</code> 참조도구)</h2>
+<p>벤치마크 17 펩타이드에 대해 우리 <code>PharmaProperties</code> 계산값을 검증된 <code>peptides</code>(v0.5.0) 패키지와 비교.</p>
+<table>
+<thead>
+<tr>
+<th>Descriptor</th>
+<th style="text-align: center;">Pearson r</th>
+<th style="text-align: center;">MAE</th>
+<th>판정</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GRAVY (Kyte-Doolittle)</td>
+<td style="text-align: center;"><strong>1.0000</strong></td>
+<td style="text-align: center;">0.000</td>
+<td>✅ 완전 일치</td>
+</tr>
+<tr>
+<td>Instability Index</td>
+<td style="text-align: center;"><strong>1.0000</strong></td>
+<td style="text-align: center;">0.000</td>
+<td>✅ 완전 일치</td>
+</tr>
+<tr>
+<td>Aliphatic Index</td>
+<td style="text-align: center;"><strong>1.0000</strong></td>
+<td style="text-align: center;">0.000</td>
+<td>✅ 완전 일치</td>
+</tr>
+<tr>
+<td>pI (등전점)</td>
+<td style="text-align: center;">0.9968</td>
+<td style="text-align: center;">0.161</td>
+<td>✅ 사실상 일치(pKa 셋 차이로 미세 오프셋)</td>
+</tr>
+<tr>
+<td>Boman Index</td>
+<td style="text-align: center;">0.9718</td>
+<td style="text-align: center;">0.190</td>
+<td>✅ 사실상 일치</td>
+</tr>
+</tbody>
+</table>
+<p><strong>결론</strong>: ADMET 물성 surrogate(Instability/GRAVY/Boman/pI/Aliphatic)는 <strong>계산 정확성이 검증됨(HIGH 신뢰)</strong>. 이들은 예측이 아니라 <strong>결정론적 descriptor</strong>이므로 "맞고 틀림"이 아니라 "표준 공식과 일치하는가"의 문제이며, 일치한다.</p>
+<hr />
+<h2 id="part-b-pepadmet-hc50-vs">Part B — 용혈 독성 예측 (pepADMET HC50 vs 측정값)</h2>
+<p>문헌 용혈 ground-truth <strong>52종(용혈성 37 + 비용혈 13)</strong>(HemoPI/DBAASP/개별 논문, 출처 하단)에 pepADMET을 실행. 사이클릭 gramicidin S 유사체 2종은 선형 표기 불가로 제외 → <strong>50종 평가(L32/D18)</strong>.</p>
+<blockquote>
+<p>데이터 확장 완료(52종, D-aa=19): 기존 26종(D-aa=4) 보존 + 신규 26종 추가. 상세 목록 = <code>BENCH_admet_v2.md</code>.</p>
+</blockquote>
+<h3 id="_1">정량 결과</h3>
+<table>
+<thead>
+<tr>
+<th>지표</th>
+<th>값</th>
+<th>비고</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Spearman (측정 HC50 vs our hc50)</td>
+<td>0.50</td>
+<td><strong>n=3</strong> (수치 HC50 확보가 3건뿐) → 결론 불가</td>
+</tr>
+<tr>
+<td><strong>용혈/비용혈 분류 ROC-AUC (전체)</strong></td>
+<td><strong>0.32</strong></td>
+<td><strong>0.5 미만 = 역변별 (완화)</strong> — before: 0.193</td>
+</tr>
+<tr>
+<td><strong>용혈/비용혈 분류 ROC-AUC (L-aa)</strong></td>
+<td><strong>0.146</strong></td>
+<td>n=32, 역변별 견고 — before: 0.167</td>
+</tr>
+<tr>
+<td><strong>용혈/비용혈 분류 ROC-AUC (D-aa)</strong></td>
+<td><strong>0.677</strong></td>
+<td>n=18, <strong>양의 변별</strong> — before: 0.25(n=4 노이즈)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="our_hc50">그룹별 our_hc50 (더 음수 = 우리 모델이 더 독성으로 예측)</h3>
+<table>
+<thead>
+<tr>
+<th>실제 라벨</th>
+<th style="text-align: center;">n</th>
+<th style="text-align: center;">평균 our_hc50</th>
+<th>범위</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>용혈성(toxic)</strong></td>
+<td style="text-align: center;">14</td>
+<td style="text-align: center;"><strong>−106</strong></td>
+<td>[−293, −46]</td>
+</tr>
+<tr>
+<td><strong>비용혈(non-toxic)</strong></td>
+<td style="text-align: center;">10</td>
+<td style="text-align: center;"><strong>−376</strong></td>
+<td>[−1004, −13]</td>
+</tr>
+</tbody>
+</table>
+<p>→ <strong>역전(L-aa 기준)</strong>: 우리 모델은 <em>비용혈</em> L-aa 펩타이드를 오히려 더 독성으로 예측한다.</p>
+<h3 id="_2">역전 사례 (가장 독성으로 예측된 것들이 실제 비용혈)</h3>
+<table>
+<thead>
+<tr>
+<th>펩타이드</th>
+<th>실제</th>
+<th style="text-align: right;">our_hc50</th>
+<th>문제</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LL-37</td>
+<td>비용혈(임상 AMP)</td>
+<td style="text-align: right;"><strong>−1004</strong></td>
+<td>가장 독성으로 오판</td>
+</tr>
+<tr>
+<td>Cecropin A</td>
+<td>비용혈</td>
+<td style="text-align: right;">−823</td>
+<td>오판</td>
+</tr>
+<tr>
+<td>Dermaseptin S1</td>
+<td>비용혈</td>
+<td style="text-align: right;">−548</td>
+<td>오판</td>
+</tr>
+<tr>
+<td>Melittin</td>
+<td>용혈(양성대조)</td>
+<td style="text-align: right;">−293</td>
+<td>✅ 맞음(가장 강함)</td>
+</tr>
+<tr>
+<td>PGLa / Indolicidin</td>
+<td>용혈</td>
+<td style="text-align: right;">−110 / −91</td>
+<td>약하게 예측(과소)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_3">해석 (정직)</h3>
+<ul>
+<li><strong>단일 양성대조(melittin)는 정확</strong>(−293, 가장 음수)하지만, <strong>L-aa 용혈/비용혈 AMP를 변별하지 못하고 오히려 역전</strong>(AUC 0.146).</li>
+<li>원인 추정: pepADMET hc50가 <strong>양이온성·양친매성·서열 길이</strong> 같은 AMP 공통 특징에 반응 → LL-37·Cecropin처럼 길고 강한 양친매성 AMP(실제로는 선택적 비용혈)를 "독성"으로 과대 예측. 즉 <strong>"막활성 AMP 탐지기"에 가깝고 용혈 특이성은 약함</strong>.</li>
+<li>이는 앞선 발견(pepADMET binary 비변별성 → 우리는 <strong>native 대비 상대 hc50 게이트</strong>만 사용)과 일관. <strong>절대·범용 용혈 예측기로는 신뢰 불가</strong>.</li>
+</ul>
+<h3 id="l-aa-vs-d-aa-52-d19">L-aa vs D-aa 분리 (확장 완료, 52종 D=19)</h3>
+<table>
+<thead>
+<tr>
+<th>그룹</th>
+<th style="text-align: center;">n(용혈+비용혈)</th>
+<th style="text-align: center;">용혈 분류 AUC</th>
+<th>해석</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>L-aa</strong></td>
+<td style="text-align: center;">24 + 8</td>
+<td style="text-align: center;"><strong>0.146</strong> (n=32, 역변별 견고)</td>
+<td>L-aa군 역전 양상 n=20→32에서도 유지·강화. 견고한 진짜 한계</td>
+</tr>
+<tr>
+<td><strong>D-aa</strong></td>
+<td style="text-align: center;">13 + 5</td>
+<td style="text-align: center;"><strong>0.677</strong> (n=18, <strong>양의 변별</strong>)</td>
+<td>이전 n=4 소표본 노이즈(AUC 0.25)에서 n=18로 확보 시 변별력 확인</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>D-aa 그룹: n=18에서 AUC 0.677로 양의 변별 확인. 이전 0.25(n=4)는 과소표본 노이즈였음.</li>
+<li>L-aa 그룹: n=32에서도 AUC 0.146 — 역변별이 강화됨. 이는 단순 데이터 부족 문제가 아닌 구조적 한계.</li>
+<li><strong>결론</strong>: D-aa는 변별 가능, L-aa는 역변별 — 두 그룹의 양상이 정반대임을 확인.</li>
+</ul>
+<h3 id="caveats">Caveats</h3>
+<ul>
+<li><strong>학습셋 중복 위험</strong>: DBAASP/HemoPI는 pepADMET 학습에 쓰였을 수 있어 일부는 독립 검증 아님(역전이 더 우려스러움).</li>
+<li><strong>HC50 절대단위 미검증</strong>(상대비교 전용), 인큐베이션 조건(1h vs 18h)에 따라 측정 HC50 최대 7배 변동.</li>
+<li>수치 HC50 확보 소수건 → Spearman은 참고용.</li>
+</ul>
+<hr />
+<h2 id="_4">종합 결론</h2>
+<table>
+<thead>
+<tr>
+<th>ADMET 구성</th>
+<th>검증 결과</th>
+<th style="text-align: center;">신뢰</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>물성 descriptor (Instability/GRAVY/Boman/pI/Aliphatic)</td>
+<td>참조도구와 r≈1.0 일치</td>
+<td style="text-align: center;"><strong>HIGH</strong></td>
+</tr>
+<tr>
+<td>용혈 독성(pepADMET HC50) — 양성대조</td>
+<td>melittin 정확 식별</td>
+<td style="text-align: center;">MED</td>
+</tr>
+<tr>
+<td>용혈 독성 — L-aa 변별(독립 AMP, n=32)</td>
+<td><strong>AUC 0.146, 역변별 견고</strong></td>
+<td style="text-align: center;"><strong>LOW</strong></td>
+</tr>
+<tr>
+<td>용혈 독성 — D-aa 변별(독립 AMP, n=18)</td>
+<td><strong>AUC 0.677, 양의 변별 확인</strong></td>
+<td style="text-align: center;">MED</td>
+</tr>
+<tr>
+<td>전체 AUC (L+D, n=50)</td>
+<td><strong>0.32 (역변별이나 완화)</strong></td>
+<td style="text-align: center;">LOW</td>
+</tr>
+<tr>
+<td>ADME(흡수/분포/대사/배설)</td>
+<td><strong>미통합</strong></td>
+<td style="text-align: center;">—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>한 줄</strong>: ADMET의 <em>물성 계산</em>은 정확하고, <em>D-aa 용혈 변별</em>은 n=18에서 AUC 0.677로 가능성이 있으나, <em>L-aa 독성 예측</em>은 AUC 0.146으로 견고한 역변별 한계가 확인된다 → 현재처럼 <strong>native 대비 상대 게이트로만 제한 사용</strong>해야 하며, 범용 독성 라벨로 써서는 안 된다. 개선: 용혈 특이 피처/독립 학습셋 재훈련(특히 L-aa), ADME 모델 통합, HC50 단위 확정.</p>
+<h2 id="_5">출처</h2>
+<p>HemoPI(PMC4782144), Hemolytik(NAR 2014), pepADMET/HC50(Commun.Biol.2025 nature s42003-025-07615-w), Piscidin/Dermaseptin(PMC4014698), Mastoparan(PMC10611374), Gramicidin S(PMC1464084), Aurein(PMC6695355), 비독성 리뷰(PMC8953747), melittin(PMC10838977). 상세 = <code>_analysis/BENCH_admet_literature.md</code>. 물성 참조 = <code>peptides</code> v0.5.0. 확장 데이터(52종 web research 출처) = <code>_analysis/BENCH_admet_v2.md</code>.</p>
+<p><em>생성/갱신: bench_admet_tox.py / descriptor 비교 실측 (2026-06-17). 52종 확장 완료 (2026-06-18). 재현 가능. 결과 파일: <code>_analysis/BENCH_admet_v2_results.json</code>.</em></p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

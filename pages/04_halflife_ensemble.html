@@ -1,0 +1,329 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>⏳ 혈중 반감기 앙상블 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html" class="active">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="04-half-life-ensemble">04. 혈중 반감기 앙상블 (Half-life Ensemble) — 간접 검증의 대표 사례</h1>
+<blockquote>
+<p><strong>한 줄 요약</strong>: 휴리스틱(GLP-1 약동학 기반 log-multiplicative)과 RF 회귀(PEPlife2 학습)
+두 surrogate를 log10 정규화 평균으로 결합한 앙상블. <strong>절대 t½(임상 반감기)을 주장하지 않으며</strong>,
+후보 간 <strong>상대 순위 surrogate</strong>로서 Spearman 벤치마크로만 간접 검증된다.
+신뢰등급: <strong>절대값 LOW / 상대순위 MED</strong>.</p>
+</blockquote>
+<p>분석 대상 파일:
+- <code>pyrosetta_flow/halflife_ensemble.py</code> (앙상블 결합·정규화·fallback)
+- <code>pyrosetta_flow/halflife_model/features.py</code> (RF feature 추출)
+- <code>AG_src/pipeline/step08_stability.py</code> (휴리스틱 log-multiplicative 모델·게이트)
+- <code>AG_src/tests/test_halflife_benchmark.py</code> (Spearman 상대순위 검증)</p>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11">1.1 두 상보적 추정기</h3>
+<p>앙상블은 두 개의 독립 surrogate를 결합한다 (<code>halflife_ensemble.py:3-7</code>).</p>
+<p><strong>(A) 휴리스틱</strong> — <code>AG_src.pipeline.step08_stability.predict_half_life</code>
+GLP-1 작용제 약동학을 참고한 <strong>log10 곱셈(log-multiplicative) 모델</strong>이다
+(<code>step08_stability.py:225-275</code>). 핵심 식:</p>
+<pre><code>log10(t½) = log10(base) + proteo_log + Σ modification_log_mult
+</code></pre>
+<ul>
+<li><code>base = 0.05h</code> — 짧은 선형 펩타이드 혈중 baseline (~3분) (<code>step08_stability.py:111</code>)</li>
+<li><code>proteo_log</code> — 프로테아제 취약성 음수 항. 평균 취약성, dipeptide 절단부위 수,
+  말단 exopeptidase를 결합 (<code>step08_stability.py:243-247</code>):
+  <code>proteo_log = -( K_PROTEO·(avg_vuln-0.8) + K_CLEAVE·cleavage_sites + K_TERM·((n_term+c_term)/2-0.8) )</code>
+  계수: <code>_HL_PROTEO_K=0.32</code>, <code>_HL_CLEAVE_K=0.06</code>, <code>_HL_TERM_K=0.15</code> (<code>step08_stability.py:112-114</code>)</li>
+<li><code>modification_log_mult</code> — 곱셈(log 합) modification 항. fatty_acid가 장반감기를 주도
+  (<code>step08_stability.py:115-121</code>): fatty_acid <code>log10(2800)</code>, pegylation <code>log10(2200)</code>,
+  d_amino_acid <code>log10(35)</code>, cyclization <code>log10(1.8)</code>, substitution <code>log10(4.0)</code></li>
+<li>고리화는 Cys 쌍(≥4 간격) 자동 감지로 적용 (<code>step08_stability.py:249-254</code>)</li>
+<li>최종 클램프: <code>max(0.02, min(10**log_hl, 1.0e4))</code> (<code>step08_stability.py:269</code>)</li>
+</ul>
+<p><strong>(B) RF (PEPlife2)</strong> — <code>halflife_model/halflife_gbr.joblib</code> (43MB, GBR 번들)
+sklearn 회귀 모델을 joblib로 로드 (<code>halflife_ensemble.py:35-46</code>). 추론 시
+<code>features.featurize</code>로 feature 벡터를 만들고 <code>np.expm1(model.predict)</code> 로 시간 단위 복원
+(<code>halflife_ensemble.py:49-63</code>). feature는 길이, 20종 잔기 분율, GRAVY, net charge,
+Arg/Lys·Met·Cys·Pro 카운트, cleavage_sites/density, 말단 KR, D-form/고리/화학수정/말단캡/
+지질·PEG 플래그 (<code>features.py:11-49</code>). <strong>feature 순서는 학습 시점의 <code>feat_cols</code>와
+정확히 일치해야</strong> 한다 (<code>features.py:1-3</code>, <code>halflife_ensemble.py:59</code>).</p>
+<h3 id="12-log10">1.2 log10 정규화 평균 결합</h3>
+<p>두 시간값을 동일한 <code>[0.02h, 200h]</code> log10 스케일로 정규화 후 평균한다
+(<code>halflife_ensemble.py:19, 75-78</code>):</p>
+<pre><code class="language-python">_HL_LO, _HL_HI = log10(0.02), log10(200.0)
+norm = clip((log10(hl) - _HL_LO) / (_HL_HI - _HL_LO), 0, 1)
+stability_norm = mean(가용한 정규화 값들)   # halflife_ensemble.py:90-100
+</code></pre>
+<ul>
+<li>두 값 모두 존재 → <code>source="ensemble"</code></li>
+<li>한쪽만 → <code>source="heuristic"</code> 또는 <code>"rf"</code></li>
+<li>둘 다 실패 → <code>source="none"</code>, <code>stability_norm=0.0</code></li>
+</ul>
+<h3 id="13-fallback">1.3 표시값과 fallback</h3>
+<ul>
+<li><strong>표시용 <code>half_life_h</code></strong> 는 절대 스케일을 더 신뢰하는 <strong>휴리스틱</strong>을 사용하고,
+  없으면 RF로 대체 (<code>halflife_ensemble.py:7, 101-103</code>)</li>
+<li><strong>graceful fallback</strong>: sklearn/joblib/모델 부재 시 RF는 <code>None</code>을 반환하고 휴리스틱
+  단독으로 동작 (<code>halflife_ensemble.py:43-46, 51-52</code>). 휴리스틱마저 import 실패하면
+  <code>_HAS_HEUR=False</code> 로 안전 처리 (<code>halflife_ensemble.py:22-27, 66-72</code>)</li>
+</ul>
+<hr />
+<h2 id="2-downstream">② 영향 (downstream)</h2>
+<p>앙상블 출력은 다목적 스코어링의 <strong>stability objective</strong>로 흘러간다.</p>
+<ul>
+<li><code>pyrosetta_flow/multiobjective.py:115-121</code> 에서 <code>ensemble_halflife(seq)</code>를 호출해
+  <code>half_life_h</code>, <code>half_life_heuristic_h</code>, <code>half_life_rf_h</code>, <code>halflife_source</code>,
+  <code>stability_norm</code> 을 <code>extra_scores</code>에 채운다. 실패 시 휴리스틱 단독 fallback
+  (<code>multiobjective.py:123-132</code>)</li>
+<li><code>stability_norm</code> → pareto_ranking 의 <code>stability</code> 키로 매핑 (<code>multiobjective.py:263-264</code>)</li>
+<li>가중 스칼라화에서 <code>stability</code> 가중치 <strong>0.20</strong> 으로 합산 (<code>multiobjective.py:277, 297-302</code>)</li>
+<li><code>scoring_pipeline.py:206</code> 에서 <code>stability_norm</code> 을 소비. 동 파일 <code>:77</code> 에 정직성
+  면책("half_life/admet 은 ranking surrogate, 임상 수치 아님") 명시</li>
+</ul>
+<p>즉 이 기능은 <strong>후보 랭킹의 약 20% 비중을 차지하는 안정성 축</strong>을 담당하며, 절대 t½이
+아니라 정규화 순위로만 기여한다.</p>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item</h2>
+<h3 id="a-2026-06-09">A. 반감기 재보정 (완료, 2026-06-09)</h3>
+<p>기존 <strong>additive 모델</strong>은 cyclization +24h가 사이클릭/SS 펩타이드(SST-14)를 과대예측해
+plain Spearman = <strong>−0.5(순위 역전)</strong> 였다 (<code>step08_stability.py:105-110</code>,
+<code>test_halflife_benchmark.py:4-5</code>). <strong>log-multiplicative 모델</strong>로 교체하여 SST-14를
+16.6h → ~0.04h 로 교정하고 문헌 8종에서 Spearman 0.86(all)/0.50(plain)을 회복
+(<code>step08_stability.py:108-110</code>). 회귀 테스트로 고정 (§④).</p>
+<h3 id="vr-s5-01-todo">VR-S5-01. 프로테아제 취약성 계수 출처 (미해결, TODO)</h3>
+<p><code>_PROTEASE_VULNERABILITY</code> 딕셔너리(<code>step08_stability.py:50-71</code>)는 트립신(R/K),
+키모트립신(F/Y/W), 엘라스타제(A/V/L)의 <strong>정성적 절단 선호 순서</strong>를 반영한 <strong>IN-HOUSE
+휴리스틱 ranking 프록시</strong>이며, 정량 문헌값(kcat/Km, Schechter-Berger pocket 데이터)이
+아니다 (<code>step08_stability.py:42-48</code>). 절대 의미가 없고 후보 간 상대 순위로만 사용된다.
+TODO: 실측 kcat/Km로 교체 또는 출처 주석 (<code>step08_stability.py:48</code>).</p>
+<h3 id="a1-2026-06-17">A1. 게이트 정직성 정정 (완료, 2026-06-17)</h3>
+<p><code>apply_stability_gate</code>에 신뢰등급 경고를 명시하고, 절대 임계 대신 surrogate 순위 상위
+비율만 통과시키는 <code>relative_percentile</code> 모드를 추가 (<code>step08_stability.py:526-569</code>).
+'144h 달성' 같은 임상 단위 해석을 금지하고 게이트를 <strong>상대 우선순위 필터</strong>로 재정의
+(<code>step08_stability.py:534-543</code>). 회귀 테스트 <code>test_stability_gate_relative_percentile_mode</code>
+로 고정 (<code>test_halflife_benchmark.py:79-88</code>).</p>
+<hr />
+<h2 id="4">④ 완성도 % + 근거</h2>
+<p><strong>완성도: 약 80%</strong></p>
+<table>
+<thead>
+<tr>
+<th>항목</th>
+<th>상태</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>앙상블 결합·정규화 로직</td>
+<td>완료</td>
+<td><code>halflife_ensemble.py:81-108</code></td>
+</tr>
+<tr>
+<td>graceful fallback (3단계)</td>
+<td>완료</td>
+<td><code>halflife_ensemble.py:43-46, 66-72, 123-132</code></td>
+</tr>
+<tr>
+<td>휴리스틱 재보정 (log-mult)</td>
+<td>완료</td>
+<td><code>step08_stability.py:225-275</code></td>
+</tr>
+<tr>
+<td>RF 학습·번들 배치</td>
+<td>완료</td>
+<td><code>halflife_model/halflife_gbr.joblib</code> (43MB 존재)</td>
+</tr>
+<tr>
+<td>상대순위 벤치마크</td>
+<td>완료 (8종, ρ≥0.7 고정)</td>
+<td><code>test_halflife_benchmark.py:21-62</code></td>
+</tr>
+<tr>
+<td>게이트 정직성 정정</td>
+<td>완료</td>
+<td><code>step08_stability.py:526-569</code></td>
+</tr>
+<tr>
+<td><strong>절대값 캘리브레이션</strong></td>
+<td><strong>미시행</strong></td>
+<td><code>step08_stability.py:536-538</code> ("절대값 캘리브레이션 미시행")</td>
+</tr>
+<tr>
+<td><strong>프로테아제 계수 정량 출처</strong></td>
+<td><strong>미확보 (VR-S5-01)</strong></td>
+<td><code>step08_stability.py:46-48</code></td>
+</tr>
+</tbody>
+</table>
+<p>남은 20%는 정량 검증(in-vitro 혈청 어세이 캘리브레이션)과 계수 문헌화로, 둘 다
+<strong>절대값 신뢰등급(LOW)을 끌어올리는 작업</strong>이다. 상대순위 기능 자체는 완비.</p>
+<hr />
+<h2 id="5">⑤ 학술 가치</h2>
+<ul>
+<li><strong>정직한 surrogate 설계의 모범</strong>: 모듈 docstring이 "둘 다 surrogate(임상 t½ 아님),
+  앙상블은 강건성 향상을 노린 것이며 추가 검증 권장"임을 명시(<code>halflife_ensemble.py:9</code>).
+  과대주장 없이 한계를 코드 레벨에서 노출한다.</li>
+<li><strong>이질적 추정기 앙상블</strong>: 기전 기반 휴리스틱(해석 가능, 절대 스케일)과 데이터 기반
+  RF(일반화)를 log 스케일에서 결합해 단일 모델의 편향을 상호 보완
+  (<code>halflife_ensemble.py:3-7</code>).</li>
+<li><strong>순위 보존 검증 방법론</strong>: 절대 캘리브레이션 없이도 Spearman으로 의사결정에 필요한
+  "상대 우선순위"만 검증하는 접근(§특별 섹션)은 데이터가 희소한 펩타이드 t½ 도메인에서
+  실용적이다.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<pre><code class="language-python">from pyrosetta_flow.halflife_ensemble import ensemble_halflife
+
+res = ensemble_halflife(&quot;AGCKNFFWKTFTSC&quot;, modifications=[], rec={})
+# {
+#   &quot;half_life_h&quot;: 0.04,            # 표시용(휴리스틱; 절대값 신뢰 LOW)
+#   &quot;half_life_heuristic_h&quot;: 0.04,
+#   &quot;half_life_rf_h&quot;: &lt;float|None&gt;, # RF 미가용 시 None
+#   &quot;stability_norm&quot;: &lt;0~1&gt;,        # 랭킹용 (이것이 핵심 출력)
+#   &quot;halflife_source&quot;: &quot;ensemble&quot; | &quot;heuristic&quot; | &quot;rf&quot; | &quot;none&quot;,
+# }
+</code></pre>
+<ul>
+<li><code>modifications</code>: <code>["fatty_acid", "d_amino_acid", "cyclization", ...]</code> (휴리스틱에 전달)</li>
+<li><code>rec</code>: RF feature용 메타(<code>chiral</code>, <code>lin_cyc</code>, <code>chem_mod</code>, <code>nter</code>, <code>cter</code>) (<code>features.py:38-48</code>)</li>
+<li><strong>올바른 사용</strong>: <code>stability_norm</code>·<code>half_life_h</code>를 <strong>후보 간 비교/랭킹</strong>에만 사용</li>
+<li><strong>금지</strong>: <code>half_life_h</code>를 임상 반감기 절대값으로 보고/해석 (<code>step08_stability.py:536-538</code>)</li>
+<li>직접 휴리스틱: <code>from AG_src.pipeline.step08_stability import predict_half_life</code></li>
+<li>게이트: <code>apply_stability_gate(results, gate_mode="relative_percentile", top_fraction=0.5)</code>
+  권장 (절대값 미신뢰 시 더 정직, <code>step08_stability.py:543-544</code>)</li>
+</ul>
+<p>벤치마크 실행:</p>
+<pre><code class="language-bash">pytest AG_src/tests/test_halflife_benchmark.py -v
+</code></pre>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<p>방사성의약품 후보의 혈중 안정성은 핵심 약동학 속성이지만, <strong>신규 펩타이드 변이체의
+실측 t½ 데이터는 존재하지 않는다.</strong> 무한 발굴 엔진은 수많은 변이체를 빠르게(μs~ms)
+서열만으로 우선순위화해야 하므로 (<code>multiobjective.py:12, 16</code>):</p>
+<ol>
+<li>실측이 불가능한 안정성 축에 대해 <strong>계산 가능한 surrogate</strong>를 제공하고,</li>
+<li>단일 추정기의 편향을 앙상블로 완화하며,</li>
+<li>절대값을 주장하지 않고 <strong>상대 순위만</strong> 다목적 최적화(stability 가중 0.20,
+   <code>multiobjective.py:277</code>)에 기여시켜 환각(임상 수치 위장)을 차단한다.</li>
+</ol>
+<p>이는 프로젝트의 "계산 불가능을 계산 가능한 척하지 않는다"(VR-cycle-09/H-06) 정직성
+원칙의 구체적 구현이다.</p>
+<hr />
+<h2 id="spearman">★ 특별 섹션: 간접 검증 방식 (Spearman 상대순위 벤치마크)</h2>
+<p>이 기능의 신뢰는 <strong>절대 캘리브레이션 없이</strong> 확보된다. 핵심 메커니즘은 다음과 같다.</p>
+<h3 id="_1">왜 절대값이 아니라 순위인가</h3>
+<p>펩타이드 t½ 절대값을 정확히 예측하려면 in-vitro 혈청 어세이로 모델을 보정해야 하는데,
+프로젝트는 이를 <strong>미시행</strong>으로 명시한다(<code>step08_stability.py:536-538</code>). 대신 의사결정에
+실제로 필요한 것은 "A가 B보다 더 안정한가"라는 <strong>상대 순위</strong>뿐이다. 다목적 최적화는
+순위 기반(pareto + 가중 스칼라)이므로, 절대 스케일이 틀려도 <strong>단조 변환 하에 순위가
+보존되면</strong> 의사결정 품질은 유지된다.</p>
+<h3 id="t12-8">검증 데이터셋 (문헌 t½ 8종)</h3>
+<p><code>test_halflife_benchmark.py:21-30</code> 의 <code>BENCH</code>는 문헌 혈중 t½가 공개된 펩타이드로 구성:</p>
+<table>
+<thead>
+<tr>
+<th>펩타이드</th>
+<th>modification</th>
+<th>문헌 t½(h)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GLP-1</td>
+<td>—</td>
+<td>0.03</td>
+</tr>
+<tr>
+<td>SST-14</td>
+<td>—</td>
+<td>0.05</td>
+</tr>
+<tr>
+<td>Exenatide</td>
+<td>—</td>
+<td>2.4</td>
+</tr>
+<tr>
+<td>Octreotide</td>
+<td>d_amino_acid</td>
+<td>1.7</td>
+</tr>
+<tr>
+<td>Desmopressin</td>
+<td>d_amino_acid</td>
+<td>3.0</td>
+</tr>
+<tr>
+<td>Leuprolide</td>
+<td>d_amino_acid</td>
+<td>3.0</td>
+</tr>
+<tr>
+<td>Liraglutide</td>
+<td>fatty_acid</td>
+<td>13.0</td>
+</tr>
+<tr>
+<td>Semaglutide</td>
+<td>fatty_acid</td>
+<td>168.0</td>
+</tr>
+</tbody>
+</table>
+<p>스케일이 0.03h ~ 168h(4 orders of magnitude)에 걸쳐 있어 순위 변별이 의미를 가진다.</p>
+<h3 id="spearman_1">Spearman 순위상관으로 검증</h3>
+<p><code>_spearman</code>(<code>test_halflife_benchmark.py:33-42</code>)은 예측값과 문헌값을 각각 <strong>순위로 변환</strong>한
+뒤 상관을 계산한다. 절대 오차가 아니라 <strong>순위 일치도</strong>만 보므로, 단조 관계만 맞으면 통과한다.
+고정된 임계(회귀 테스트):</p>
+<ul>
+<li><strong>전체 Spearman ≥ 0.7</strong> (<code>test_halflife_benchmark.py:51-55</code>) — 실측 ρ≈0.86 (docstring 기준)</li>
+<li><strong>plain(modification 無) Spearman ≥ 0.3</strong> (<code>test_halflife_benchmark.py:58-62</code>) —
+  재보정 전 −0.5(역전)에서 회복</li>
+<li><strong>SST-14 &lt; 1h</strong> (<code>test_halflife_benchmark.py:45-48</code>) — 과대예측 방지</li>
+<li><strong>fatty_acid &gt; 10× plain</strong> (<code>test_halflife_benchmark.py:65-69</code>) — 알부민 결합 효과 방향성</li>
+<li><strong>변이체 변별</strong>: 말단 변이가 native보다 짧음 (<code>test_halflife_benchmark.py:72-76</code>)</li>
+</ul>
+<h3 id="rf">RF 모델의 별도 검증</h3>
+<p>RF는 <strong>in-domain CV Spearman 0.78 / R²log 0.64</strong> 로 보고됨(<code>halflife_ensemble.py:5</code>).
+이 역시 절대 정확도(R²)보다 순위(Spearman)를 1차 지표로 삼는다.</p>
+<h3 id="low-med">정직성의 핵심 (절대 LOW / 상대 MED)</h3>
+<ul>
+<li><strong>절대값 = LOW</strong>: 캘리브레이션 미시행(<code>step08_stability.py:536-538</code>), 계수 출처 미확보
+  (VR-S5-01, <code>step08_stability.py:46-48</code>). <code>half_life_h</code>를 임상 수치로 해석 금지.</li>
+<li><strong>상대순위 = MED</strong>: 8종 문헌 벤치마크 Spearman ρ≥0.86(heuristic)/0.78(RF CV)로
+  <strong>순위 경향성만</strong> 회귀 테스트에 고정. 충분히 검증된 절대 진실(HIGH)이 아니라,
+  의사결정에 필요한 범위에서만 "순위가 맞다"는 간접 증거.</li>
+</ul>
+<p>요약하면, 이 기능은 <strong>"틀린 절대값을 정직하게 인정하면서, 맞는 상대 순위만 검증하여
+필요한 신뢰만 확보"</strong> 하는 간접 검증의 대표 사례다.</p>
+<hr />
+<h2 id="file_pathline">검증 인용 목록 (file_path:line)</h2>
+<p><strong>앙상블 결합·정규화·fallback</strong>
+- <code>pyrosetta_flow/halflife_ensemble.py:9</code> — surrogate·추가검증 권장 면책
+- <code>pyrosetta_flow/halflife_ensemble.py:19</code> — log10 정규화 범위 <code>[0.02, 200]</code>
+- <code>pyrosetta_flow/halflife_ensemble.py:35-46</code> — RF joblib 로드 + 로드 실패 fallback
+- <code>pyrosetta_flow/halflife_ensemble.py:49-63</code> — RF 추론(<code>np.expm1</code>), feat_cols 정렬
+- <code>pyrosetta_flow/halflife_ensemble.py:66-72</code> — 휴리스틱 호출 + 안전 처리
+- <code>pyrosetta_flow/halflife_ensemble.py:75-78</code> — log 정규화 함수
+- <code>pyrosetta_flow/halflife_ensemble.py:81-108</code> — 앙상블 결합·source 결정·표시값</p>
+<p><strong>RF feature</strong>
+- <code>pyrosetta_flow/halflife_model/features.py:1-3</code> — feat_cols 학습 일치 요구
+- <code>pyrosetta_flow/halflife_model/features.py:11-49</code> — featurize 전체</p>
+<p><strong>휴리스틱 (log-multiplicative)</strong>
+- <code>AG_src/pipeline/step08_stability.py:42-48</code> — VR-S5-01 출처 면책
+- <code>AG_src/pipeline/step08_stability.py:50-71</code> — <code>_PROTEASE_VULNERABILITY</code>
+- <code>AG_src/pipeline/step08_stability.py:105-121</code> — 재보정 사유 + log-mult 계수
+- <code>AG_src/pipeline/step08_stability.py:225-275</code> — <code>predict_half_life</code> log10 모델
+- <code>AG_src/pipeline/step08_stability.py:526-569</code> — <code>apply_stability_gate</code> (2026-06-17 정정)
+- <code>AG_src/pipeline/step08_stability.py:534-538</code> — 절대값 캘리브레이션 미시행 명시</p>
+<p><strong>Spearman 상대순위 벤치마크</strong>
+- <code>AG_src/tests/test_halflife_benchmark.py:4-5</code> — 재보정 전 −0.5 역전 기록
+- <code>AG_src/tests/test_halflife_benchmark.py:21-30</code> — BENCH 8종 문헌 t½
+- <code>AG_src/tests/test_halflife_benchmark.py:33-42</code> — <code>_spearman</code> 구현
+- <code>AG_src/tests/test_halflife_benchmark.py:45-76</code> — 5개 순위/방향성 테스트
+- <code>AG_src/tests/test_halflife_benchmark.py:79-88</code> — relative_percentile 게이트 테스트</p>
+<p><strong>downstream 소비</strong>
+- <code>pyrosetta_flow/multiobjective.py:115-132</code> — <code>ensemble_halflife</code> 호출 + fallback
+- <code>pyrosetta_flow/multiobjective.py:263-264, 277, 297-302</code> — stability 가중 0.20
+- <code>pyrosetta_flow/scoring_pipeline.py:77, 206</code> — surrogate 면책 + <code>stability_norm</code> 소비</p>
+<hr />
+<p><em>작성: 2026-06-17 · 신뢰등급 절대값 LOW / 상대순위 MED · 읽기전용 분석 (코드 미수정)</em></p></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

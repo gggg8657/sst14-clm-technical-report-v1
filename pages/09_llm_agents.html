@@ -1,0 +1,197 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🤖 LLM 에이전트 (Planner/Critic/Reporter) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html" class="active">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="09-llm-planner-critic-reporter-vllm">09. LLM 에이전트 (Planner / Critic / Reporter, vLLM)</h1>
+<blockquote>
+<p>대상 모듈: <code>AG_src/llm/prompts.py</code>, <code>AG_src/llm/provider.py</code>, <code>AG_src/agents/{base_agent,planner,critic,reporter}.py</code>, <code>AG_src/config/pipeline_config.yaml</code>
+절대 규칙: 모든 주장은 <code>file_path:line</code> 인용. 미확인 사항은 "미검증"으로 명시. 본 분석은 읽기 전용.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11-3-llm-co-scientist">1.1 3개 LLM 에이전트의 역할 (Co-Scientist 루프)</h3>
+<p>본 파이프라인은 PyRosetta mutate→dock 루프를 LLM이 "가설 주도"로 조종하는 Co-Scientist 구조다. 세 에이전트가 각 iteration에서 순차적으로 작동한다.</p>
+<ul>
+<li><strong>PlannerAgent</strong> (<code>AG_src/agents/planner.py:212</code>) — "연구 설계/실험 기획" (<code>planner.py:226</code>). 각 iteration의 <code>ExperimentPlan</code>(가설 + 파라미터 + 변이 가이드)을 생성·갱신한다 (<code>planner.py:241</code> <code>create_initial_plan</code>, <code>planner.py:335</code> <code>update_plan</code>).</li>
+<li><strong>ScientistCriticAgent</strong> (<code>AG_src/agents/critic.py:266</code>) — "비판적 검토/원인 분석" (<code>critic.py:285</code>). QC 결과/랭크 테이블을 해석해 실패 유형을 분류하고 다음 iteration 파라미터 변경(최대 2개)을 제안한다 (<code>critic.py:297</code> <code>analyze_results</code>).</li>
+<li><strong>ReporterAgent</strong> (<code>AG_src/agents/reporter.py:53</code>) — "최종 리포트/그림 자동화" (<code>reporter.py:74</code>). iteration 요약 Markdown·lab notebook·PyMOL 렌더 스크립트를 생성한다 (<code>reporter.py:197</code> <code>generate_summary_report</code>).</li>
+</ul>
+<p>세 에이전트 모두 <code>BaseAgent</code>(<code>AG_src/agents/base_agent.py:56</code>)를 상속하며, <code>BaseAgent.has_llm</code>(<code>base_agent.py:197</code>)으로 LLM 연결 여부를 판단하고 <code>llm_generate_json</code>(<code>base_agent.py:221</code>)으로 JSON 응답을 받는다.</p>
+<h3 id="12-vllm-qwen3-32b-no-think">1.2 vLLM 백엔드 + Qwen3-32B no-think</h3>
+<p>LLM 호출은 <code>VLLMProvider</code>(<code>AG_src/llm/provider.py:251</code>)가 담당한다.</p>
+<ul>
+<li>엔드포인트: OpenAI 호환 <code>POST /v1/chat/completions</code> (<code>provider.py:304</code>).</li>
+<li>모델: 설정상 <code>qwen3-32b</code>, <code>base_url: http://localhost:8000</code>, <code>temperature: 0.3</code>, <code>max_tokens: 4096</code>, <code>timeout: 120</code> (<code>AG_src/config/pipeline_config.yaml:225-231</code>).</li>
+<li><strong>no-think 강제</strong>: payload 최상위에 <code>chat_template_kwargs.enable_thinking=False</code>를 직접 삽입한다 (<code>provider.py:299</code>). 이는 Qwen3 thinking 모델이 <code>content=null</code> + reasoning만 반환하거나 보수적으로 응답하는 현상(M4 버그)을 방지하기 위함이다 (<code>provider.py:83-85</code>, <code>provider.py:272-274</code>). 설정 기본값도 <code>enable_thinking: false</code> (<code>pipeline_config.yaml:232</code>).</li>
+<li>thinking이 켜진 경우의 안전망: <code>content</code>가 비면 <code>reasoning</code>/<code>reasoning_content</code>로 폴백하고, 둘 다 없으면 토큰 초과 가능성을 경고하며 <code>None</code> 반환 (<code>provider.py:327-343</code>).</li>
+</ul>
+<p><code>create_provider</code>(<code>provider.py:351</code>)가 팩토리다. <code>config.llm.provider</code> 값으로 <code>vllm</code>/<code>ollama</code>/<code>none</code>을 선택하며 (<code>provider.py:397-420</code>), <code>config=None</code>이면 <code>NoneProvider</code>(<code>provider.py:165</code>)를 반환해 LLM 없이 규칙 기반 모드로 작동한다 (<code>provider.py:383-384</code>). <strong>agent별 override</strong>도 지원: <code>agent_name</code> 지정 시 <code>llm.agents.&lt;name&gt;</code> 섹션이 상위 <code>llm</code> 값을 덮어쓴다 (<code>provider.py:386-396</code>). 다만 설정 파일에서 <code>agents:</code> 블록은 현재 주석 처리되어 있어 세 에이전트가 동일 모델(qwen3-32b)을 공유한다 (<code>pipeline_config.yaml:241-254</code>).</p>
+<h3 id="13-json">1.3 JSON 스키마 강제와 프롬프트 구조</h3>
+<p><code>prompts.py</code>는 에이전트별 시스템 프롬프트(<code>SYSTEM_PROMPTS</code>, <code>prompts.py:77</code>)와 출력 JSON 스키마(<code>OUTPUT_SCHEMAS</code>, <code>prompts.py:121</code>)를 분리 관리한다.</p>
+<ul>
+<li>JSON 모드: <code>VLLMProvider.generate</code>가 <code>json_mode=True</code>일 때 <code>response_format={"type":"json_object"}</code>를 설정한다 (<code>provider.py:301-302</code>).</li>
+<li>스키마 주입: 각 user 프롬프트 끝에 해당 스키마를 <code>\</code>``json ... <i>code 블록</i><code>로 첨부한다 (예: planner</code>prompts.py:320-325<code>, critic</code>prompts.py:400-405<code>, reporter</code>prompts.py:574-577`).</li>
+<li>planner는 두 모드를 가진다 — <code>default</code>(RFdiffusion/MPNN/ESMFold 포함, <code>prompts.py:32</code>)와 <code>pyrosetta_only</code>(<code>prompts.py:46</code>). 후자는 <code>mutation_guidance</code>(focus_positions + suggested_mutations)를 강제하고, RFdiffusion 등 외부 도구 언급을 금지한다 (<code>prompts.py:50-60</code>, 스키마 <code>prompts.py:122-143</code>).</li>
+<li>파싱 견고성: 응답에서 <code>&lt;think&gt;...&lt;/think&gt;</code> 블록 제거(<code>_strip_think_blocks</code>, <code>provider.py:427</code>) 후, 직접 <code>json.loads</code> → 실패 시 마크다운 코드블록/중괄호 추출(<code>_extract_json_block</code>, <code>provider.py:446</code>)로 3단계 폴백한다 (<code>provider.py:146-151</code>).</li>
+</ul>
+<h3 id="14-fail-open-llm">1.4 fail-open 폴백 (LLM 실패 시 규칙 기반)</h3>
+<p>세 에이전트는 모두 "LLM 우선, 실패 시 규칙 기반" 구조다.</p>
+<ul>
+<li>Planner: LLM 계획 생성 시도(<code>planner.py:265-278</code>) → <code>None</code>이거나 <code>validate_plan</code> 실패 시 규칙 기반 기본 파라미터(<code>_DEFAULT_PARAMETERS</code>, <code>planner.py:84</code>)로 폴백.</li>
+<li>Critic: <code>_analyze_via_llm</code>(<code>critic.py:567</code>)가 <code>None</code>이면 <code>FAILURE_ACTION_MAP</code>(<code>critic.py:150</code>) 기반 규칙 분석으로 폴백 (<code>critic.py:328-336</code>).</li>
+<li>Reporter: <code>_summarize_via_llm</code>(<code>reporter.py:516</code>)가 <code>None</code>이면 템플릿 기반 Markdown으로 폴백 (<code>reporter.py:222-231</code>).</li>
+<li>전송 계층 회복력: <code>_http_post_json</code>(<code>provider.py:46</code>)이 일시적 오류(URLError/timeout/5xx)에 대해 지수 백오프 재시도(기본 1+2회, <code>provider.py:42-43</code>), HTTP 4xx는 영구 오류로 즉시 중단 (<code>provider.py:65-69</code>). 이는 vLLM 순간 장애가 조용히 규칙 기반으로 degrade되는 것을 막기 위한 D4/F18 보강이다 (<code>provider.py:39-41</code>).</li>
+</ul>
+<p><strong>주의(미검증 위험)</strong>: fail-open 구조이므로 vLLM이 다운되어도 파이프라인은 멈추지 않고 규칙 기반으로 계속 돈다. 로그 경고는 남지만(<code>planner.py:276-278</code> 등), "LLM이 실제로 가설을 주도했는지"는 로그를 확인해야 알 수 있다 — 코드만으로는 미검증.</p>
+<hr />
+<h2 id="2">② 영향 — 가설 주도 탐색</h2>
+<p>핵심 가치는 "탐색이 무작위/그리드가 아니라 LLM 가설로 유도된다"는 점이다.</p>
+<ul>
+<li>Planner가 falsifiable 가설을 명시하고(<code>prompts.py:42</code>, <code>prompts.py:57</code>), <code>pyrosetta_only</code> 모드에서 <strong>구체적 변이 가이드</strong>(어느 위치를 어떤 잔기로)를 생성해 다음 mutate→dock 라운드의 탐색 공간을 좁힌다 (<code>prompts.py:126-135</code>).</li>
+<li>Critic이 결과를 6개 실패 유형(structural/sequence/docking/stability/selectivity)으로 분류하고(<code>critic.py:72-79</code>, 시스템 프롬프트 <code>prompts.py:98</code>), 원인에 맞는 파라미터/변이 변경을 제안해 피드백 루프를 닫는다.</li>
+<li><strong>선택성 정렬(2026-06-10 보강)</strong>: planner/critic 양쪽 프롬프트가 캠페인의 1차 목표를 "강한 SSTR2 결합"이 아니라 "SSTR2 선택성(Δmargin&gt;0)"으로 재정의한다. planner 시스템 프롬프트는 SSTR2-고유 영역(ECL2/ECL3/TM5/TM6)과 보존 위치 보존 전략을 지시하고(<code>prompts.py:61-75</code>), critic 시스템 프롬프트는 Δmargin≤0이면 "캠페인 미성공"으로 진단하라고 지시한다 (<code>prompts.py:86-95</code>). user 프롬프트에는 in-loop 선택성 리더보드가 주입된다 (planner <code>prompts.py:278-291</code>, critic <code>prompts.py:372-398</code>). 이 신호는 <code>ScientistCriticAgent.execute</code>가 컨텍스트의 <code>selectivity_leaderboard</code>/<code>best_delta_margin</code>을 모아 전달한다 (<code>critic.py:550-556</code>).</li>
+</ul>
+<p>순효과: LLM이 "Δmargin을 양수로 만드는 변이"라는 과학적 목표를 직접 추론하도록 설계되어, 단순 ddG 최적화의 함정(off-target도 강하게 결합)을 회피하는 방향으로 탐색을 편향시킨다.</p>
+<hr />
+<h2 id="3-action-item-llm">③ 관련 Action Item — "큰 LLM 결정"</h2>
+<p>사용자 메모리(<code>sstr2-goal-decisions</code>)의 "큰 LLM·real PyRosetta·전면 통합" 결정이 본 모듈에 반영되어 있다.</p>
+<ul>
+<li>ollama qwen3:8b → vLLM qwen3.5-35b-a3b(MoE Active 3B) → <strong>qwen3-32b</strong>로 업그레이드된 이력이 설정 주석에 기록됨 (<code>pipeline_config.yaml:220-226</code>). 현재 운영 모델은 <code>qwen3-32b</code>, GPU2 서빙, "~40 tok/s, JSON+no-think 검증됨" (<code>pipeline_config.yaml:226</code>).</li>
+<li>"큰 LLM"으로 전환하면서 thinking 모드 비활성화가 필수 조건이 됨(보수적 응답·content null 방지) — <code>enable_thinking=false</code> 정책으로 코드·설정 양쪽에 고정 (<code>provider.py:299</code>, <code>pipeline_config.yaml:232</code>).</li>
+<li>agent별 다른 LLM 운영 옵션(M3, planner=CoT 강한 모델, critic/reporter=빠른 MoE)이 코드(<code>provider.py:386-396</code>)와 설정 주석(<code>pipeline_config.yaml:241-254</code>)에 준비되어 있으나 현재 비활성(주석) — <strong>확장 여지로 식별됨, 활성화 여부 미검증</strong>.</li>
+</ul>
+<hr />
+<h2 id="4">④ 완성도 평가</h2>
+<p><strong>완성도: 약 85%</strong></p>
+<p>근거:</p>
+<table>
+<thead>
+<tr>
+<th>항목</th>
+<th>상태</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>3 에이전트 LLM 통합</td>
+<td>완료</td>
+<td>planner/critic/reporter 모두 <code>_*_via_llm</code> 경로 구현 (<code>planner.py:532</code>, <code>critic.py:567</code>, <code>reporter.py:516</code>)</td>
+</tr>
+<tr>
+<td>vLLM/Ollama/None 프로바이더</td>
+<td>완료</td>
+<td>3종 + 팩토리 (<code>provider.py:165,190,251,351</code>)</td>
+</tr>
+<tr>
+<td>JSON 스키마 강제 + 파싱 폴백</td>
+<td>완료</td>
+<td><code>response_format</code> + 3단계 추출 (<code>provider.py:301</code>, <code>146-151</code>)</td>
+</tr>
+<tr>
+<td>no-think + 전송 재시도</td>
+<td>완료</td>
+<td><code>enable_thinking</code> (<code>provider.py:299</code>), 백오프 (<code>provider.py:46</code>)</td>
+</tr>
+<tr>
+<td>fail-open 규칙 기반 폴백</td>
+<td>완료</td>
+<td>세 에이전트 전부 폴백 경로 보유</td>
+</tr>
+<tr>
+<td>선택성 in-loop 피드백</td>
+<td>완료</td>
+<td>planner/critic 프롬프트 + execute 배선 (<code>prompts.py:278</code>, <code>critic.py:550</code>)</td>
+</tr>
+<tr>
+<td>agent별 LLM override</td>
+<td>구현됐으나 비활성</td>
+<td>코드 존재(<code>provider.py:386</code>), 설정 주석 처리(<code>pipeline_config.yaml:241</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>감점 사유(미완/불일치):</p>
+<ol>
+<li><strong>Critic LLM 스키마와 시스템 프롬프트의 selectivity 차원 불일치(미검증 위험)</strong>: 시스템 프롬프트는 실패 유형에 <code>selectivity</code>를 추가하라고 지시(<code>prompts.py:98</code>)하나, <code>OUTPUT_SCHEMAS["critic"].failure_analysis</code>에는 <code>structural/sequence/docking/stability</code>만 있고 selectivity 필드가 없다 (<code>prompts.py:170-175</code>). LLM이 selectivity를 어디에 담을지 스키마상 모호 — 실제 응답 처리 영향은 미검증.</li>
+<li><strong>planner <code>default</code> 스키마와 <code>_PYROSETTA_ONLY_STEPS</code>의 잔존 RFdiffusion 흔적</strong>: default 스키마/스텝 템플릿에는 여전히 RFdiffusion/MPNN/ESMFold 구조가 남아 있다(<code>prompts.py:144-167</code>, <code>planner.py:108-155</code>). 운영 모드가 pyrosetta_only일 때만 정합 — 모드 설정 위치는 본 분석 범위 밖(미검증).</li>
+<li><strong>Reporter 폴백 보고서의 모델명 하드코딩 오류</strong>: LLM 보고서 헤더에 "생성 방식: LLM (Qwen 2.5 7B)"로 잘못 기재(<code>reporter.py:572</code>). 실제 모델은 qwen3-32b — 사소하나 명백한 표기 버그.</li>
+<li><strong>prompts.py 모듈 docstring의 모델명 노후화</strong>: "Qwen 2.5 7B / Qwen 3.5-35B-A3B"로 기재(<code>prompts.py:4</code>), 현 운영 모델 qwen3-32b와 불일치.</li>
+</ol>
+<hr />
+<h2 id="5-agentic-ai-scientist">⑤ 학술 가치 — Agentic AI Scientist</h2>
+<ul>
+<li><strong>Co-Scientist / AI Scientist 패러다임 구현체</strong>: Planner(가설 생성)→실험(mutate-dock)→Critic(원인 분석·반증)→Reporter(기록)의 닫힌 자율 과학 루프를 LLM으로 구동한다. 이는 "AI가 가설을 세우고 검증·수정하는" agentic discovery 흐름(예: Google Co-Scientist, Sakana AI Scientist 계열)의 도메인 특화 적용이다.</li>
+<li><strong>검증 가능한 가설(falsifiability) 강제</strong>: 프롬프트가 "falsifiable hypothesis"와 "다음 iteration의 pLDDT/ddG/도킹 분포로 검증"을 명시(<code>prompts.py:42</code>, <code>critic.py:521-523</code>)해, 단순 생성이 아니라 과학적 방법론(가설-검증)을 LLM 출력에 구조적으로 부과한다.</li>
+<li><strong>환각 방지 설계</strong>: JSON 스키마 강제, no-think, 규칙 기반 폴백, 선택성 같은 정량 목표(Δmargin) 직결 — LLM의 비결정성을 도메인 제약으로 가두는 방식은 "신뢰 가능한 과학 에이전트" 연구에 사례 가치가 있다. 특히 critic 프롬프트가 "강한 ddG가 나쁜 선택성을 가리지 않게 하라"(<code>prompts.py:94-95</code>)고 명시한 것은 다목적 최적화에서 LLM judge의 함정을 선제 차단한 설계.</li>
+<li><strong>재현성/추적성</strong>: 변경을 최대 2개로 제한(원인-결과 추적, <code>critic.py:276</code>)하고 <code>changes_from_prev</code>를 기록(<code>planner.py:570-574</code>)하는 것은 실험 노트북 자동화의 학술적 모범 사례.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<h3 id="61">6.1 프로바이더 생성</h3>
+<pre><code class="language-python">from AG_src.llm.provider import create_provider
+import yaml
+
+config = yaml.safe_load(open(&quot;AG_src/config/pipeline_config.yaml&quot;))
+provider = create_provider(config)                    # 상위 llm 설정 사용 (vllm qwen3-32b)
+provider = create_provider(config, agent_name=&quot;critic&quot;)  # agent별 override 적용 (활성 시)
+provider = create_provider(None)                      # NoneProvider → 규칙 기반 모드
+</code></pre>
+<p>(시그니처: <code>provider.py:351</code>)</p>
+<h3 id="62-llm">6.2 에이전트에 LLM 주입</h3>
+<pre><code class="language-python">from AG_src.agents.planner import PlannerAgent
+
+planner = PlannerAgent(llm_provider=provider, planner_mode=&quot;pyrosetta_only&quot;)
+plan = planner.create_initial_plan(receptor_config={...}, constraints={...})
+# 또는 context 기반
+result = planner.execute({&quot;iteration&quot;: 1, &quot;receptor_config&quot;: {...}, &quot;constraints&quot;: {...}})
+</code></pre>
+<p>(생성자: <code>planner.py:223</code>, execute: <code>planner.py:501</code>. critic: <code>critic.py:281</code>/<code>critic.py:534</code>, reporter: <code>reporter.py:67</code>/<code>reporter.py:465</code>)</p>
+<h3 id="63-json">6.3 직접 JSON 생성 / 변이 생성 프롬프트</h3>
+<pre><code class="language-python">from AG_src.llm.prompts import build_variant_generation_prompt, VARIANT_DESIGN_SYSTEM_PROMPT
+
+prompt = build_variant_generation_prompt(&quot;AGCKNFFWKTFTSC&quot;, [1,2,4,5,6,11,12,13], n_mutations=3)
+result = provider.generate_json(prompt, system_prompt=VARIANT_DESIGN_SYSTEM_PROMPT)
+</code></pre>
+<p>(<code>prompts.py:461</code>, <code>prompts.py:445</code>)</p>
+<h3 id="64">6.4 전제 조건</h3>
+<ul>
+<li>vLLM 서버가 <code>http://localhost:8000</code>에서 qwen3-32b를 서빙 중이어야 함 (<code>pipeline_config.yaml:226-227</code>). 미가동 시 자동으로 규칙 기반 폴백.</li>
+<li>timeout 120s, max_tokens 4096 (<code>pipeline_config.yaml:229-231</code>).</li>
+</ul>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<ol>
+<li><strong>무작위 탐색의 비효율 회피</strong>: SST-14 가변 위치 8곳(<code>pipeline_config.yaml:196</code>)에 대한 조합 폭발을 LLM 가설로 좁혀, mutate→dock 같은 고비용(후보당 최대 1800s, <code>pipeline_config.yaml:209</code>) 평가를 가치 높은 변이에 집중시킨다.</li>
+<li><strong>선택성이라는 다목적 함정 해결</strong>: ddG만 최적화하면 native SST-14처럼 pan-agonist가 되어버리는 함정을, "Δmargin을 양수로"라는 명시적 목표를 LLM에 부과해 회피한다 (<code>prompts.py:61-75</code>, <code>prompts.py:86-95</code>).</li>
+<li><strong>자율 실험 루프의 두뇌</strong>: 코드 기반 에이전트(qc_ranker, diversity_manager, builder, <code>pipeline_config.yaml:234</code>)는 "실행"을 담당하고, LLM 에이전트는 "왜/무엇을 다음에"라는 의사결정을 담당한다 — Co-Scientist 분업의 핵심 두뇌 역할.</li>
+<li><strong>운영 안정성</strong>: vLLM 장애·토큰 초과·JSON 깨짐에도 파이프라인이 멈추지 않도록 fail-open + 재시도 + 다단계 파싱을 갖춰, 무한 발굴 엔진(메모리 <code>sstr2-selectivity-goal</code>) 같은 장기 무인 운영을 가능케 한다.</li>
+</ol>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<ul>
+<li><code>AG_src/llm/provider.py:46-82</code> — <code>_http_post_json</code> 백오프 재시도, 4xx 영구 오류 처리</li>
+<li><code>AG_src/llm/provider.py:122-151</code> — <code>generate_json</code>, think 블록 제거 + JSON 폴백</li>
+<li><code>AG_src/llm/provider.py:165-183</code> — <code>NoneProvider</code> (규칙 기반 모드)</li>
+<li><code>AG_src/llm/provider.py:251-344</code> — <code>VLLMProvider</code>, <code>enable_thinking</code>, content/reasoning 폴백</li>
+<li><code>AG_src/llm/provider.py:299</code> — <code>chat_template_kwargs.enable_thinking</code> payload 주입</li>
+<li><code>AG_src/llm/provider.py:301-302</code> — <code>response_format</code> JSON 모드</li>
+<li><code>AG_src/llm/provider.py:351-420</code> — <code>create_provider</code> 팩토리 + agent override</li>
+<li><code>AG_src/llm/provider.py:427-470</code> — <code>_strip_think_blocks</code>, <code>_extract_json_block</code></li>
+<li><code>AG_src/llm/prompts.py:32-75</code> — planner default / pyrosetta_only 시스템 프롬프트 (선택성 가이드)</li>
+<li><code>AG_src/llm/prompts.py:80-113</code> — critic / reporter 시스템 프롬프트 (선택성 정렬)</li>
+<li><code>AG_src/llm/prompts.py:121-205</code> — <code>OUTPUT_SCHEMAS</code> (4종 JSON 스키마)</li>
+<li><code>AG_src/llm/prompts.py:228-327</code> — <code>format_planner_prompt</code> (+ 선택성 리더보드 주입)</li>
+<li><code>AG_src/llm/prompts.py:330-407</code> — <code>format_critic_prompt</code> (+ 선택성 섹션)</li>
+<li><code>AG_src/llm/prompts.py:445-532</code> — <code>VARIANT_DESIGN_SYSTEM_PROMPT</code>, <code>build_variant_generation_prompt</code></li>
+<li><code>AG_src/llm/prompts.py:535-579</code> — <code>format_reporter_prompt</code></li>
+<li><code>AG_src/agents/base_agent.py:56-239</code> — <code>BaseAgent</code>, <code>has_llm</code>, <code>llm_generate_json</code></li>
+<li><code>AG_src/agents/planner.py:212-613</code> — <code>PlannerAgent</code>, LLM 분기 + 규칙 폴백 + sanitize</li>
+<li><code>AG_src/agents/critic.py:150-259</code> — <code>FAILURE_ACTION_MAP</code> (규칙 기반 폴백)</li>
+<li><code>AG_src/agents/critic.py:266-634</code> — <code>ScientistCriticAgent</code>, <code>_analyze_via_llm</code>, 선택성 배선</li>
+<li><code>AG_src/agents/reporter.py:53-586</code> — <code>ReporterAgent</code>, <code>_summarize_via_llm</code>, 폴백 템플릿</li>
+<li><code>AG_src/agents/reporter.py:572</code> — 모델명 표기 오류 ("Qwen 2.5 7B")</li>
+<li><code>AG_src/config/pipeline_config.yaml:219-254</code> — LLM 설정 (vllm qwen3-32b, enable_thinking false, agent override 주석)</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

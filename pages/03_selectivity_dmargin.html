@@ -1,0 +1,250 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🎯 선택성 · Δmargin · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html" class="active">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="in-loop-marginhome-advantage">선택성 — in-loop 게이트 + Δmargin(home-advantage) 기능 분석</h1>
+<blockquote>
+<p>분석 루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+대상 파일: <code>pyrosetta_flow/selectivity_loop.py</code>, <code>pyrosetta_flow/multiobjective.py</code>,
+<code>data/somatostatin_receptor/curated/native_selectivity_baseline.json</code>
+모든 수치는 소스/측정 직독 인용. 미확인 항목은 "미검증"으로 명시.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11-selectivity_margin">1.1 selectivity_margin (절대 선택성)</h3>
+<p>한 후보의 SSTR2 정밀화 복합체를 off-target 수용체 4종에 도킹하여 결합 강도를 비교한다.</p>
+<ul>
+<li>off-target 수용체 정의: <code>multiobjective.py:333-338</code> <code>DEFAULT_OFFTARGET_RECEPTORS</code>
+  = SSTR1 / SSTR3 / SSTR4 / SSTR5 (curated 단일체인 PDB).</li>
+<li><strong>동일 프로토콜</strong>: 2026-06-10부터 on-target SSTR2도 off-target과 <strong>동일한
+  transplant + pre-relax 프로토콜</strong>로 재측정한다. 근거 주석 <code>multiobjective.py:401-403</code>:
+  "SSTR2 도 off-target 과 동일 transplant+pre-relax 로 재서 margin 편향 제거(이전 아티팩트 수정)."
+  수용체 dict에 SSTR2를 명시적으로 추가하는 코드는 <code>multiobjective.py:405-407</code>.</li>
+<li>병렬 실행: <code>ThreadPoolExecutor</code>(<code>multiobjective.py:404</code>, <code>multiobjective.py:424-425</code>),
+  max_workers = min(6, 수용체 수). 주석상 순차 ~25분 → 병렬 ~6분/후보(<code>multiobjective.py:403</code>).
+  ※ 실측 시간은 본 분석에서 미검증(주석 인용).</li>
+<li>margin 정의: <code>multiobjective.py:434-435</code></li>
+<li><code>worst = min(offtarget_ddg.values())</code> — 가장 강한(가장 낮은 ddG) off-target.</li>
+<li><code>margin = worst - baseline</code> — 양수 = SSTR2에 더 강하게 결합 = 선택적.</li>
+<li>즉 <strong>margin = min(offtarget ddG) − sstr2 ddG</strong>.</li>
+<li>baseline 선택: 동일 프로토콜 SSTR2 값 우선, 실패 시 루프 ddG 폴백(<code>multiobjective.py:432-433</code>).</li>
+<li>fail-closed: NaN 도킹 결과는 None 처리(<code>multiobjective.py:419</code>), off-target이 하나도
+  없으면 margin=None 반환(<code>multiobjective.py:428-430</code>).</li>
+</ul>
+<h3 id="12-margin-home-advantage">1.2 Δmargin = home-advantage 보정</h3>
+<p>절대 margin은 편향되어 있다. 후보 복합체가 SSTR2 source 구조에서 유래하므로
+native SST-14조차 동일 프로토콜에서 양(+)의 margin을 낸다(<code>multiobjective.py:436-437</code>).
+따라서 native 기준선을 빼서 보정한다.</p>
+<ul>
+<li><code>delta_margin = round(margin - nat_margin, 4)</code> (<code>multiobjective.py:438-439</code>).</li>
+<li><code>more_selective_than_native = (delta_margin is not None and delta_margin &gt; 0)</code> (<code>multiobjective.py:448</code>).</li>
+<li>native 기준선 로드: <code>_native_selectivity_baseline()</code> (<code>multiobjective.py:343-358</code>),
+  <code>native_selectivity_baseline.json</code>의 <code>margin</code> 필드를 읽어 캐시.</li>
+</ul>
+<h4 id="native-baseline-native_selectivity_baselinejson1">native baseline 실측 (<code>native_selectivity_baseline.json:1</code>)</h4>
+<pre><code class="language-json">{&quot;sstr2&quot;: -61.3475,
+ &quot;offtarget&quot;: {&quot;SSTR1&quot;: -40.1563, &quot;SSTR3&quot;: -39.0837, &quot;SSTR4&quot;: -33.984, &quot;SSTR5&quot;: -47.9815},
+ &quot;margin&quot;: 13.37}
+</code></pre>
+<ul>
+<li>min(offtarget) = SSTR5 = −47.9815 (가장 강한 off-target).</li>
+<li>검산: −47.9815 − (−61.3475) = <strong>13.366 ≈ 13.37</strong> → 저장된 margin과 일치(검증 완료).</li>
+<li>즉 native의 home-advantage는 <strong>+13.37</strong>이며, Δmargin &gt; 0 이려면 후보의 절대 margin이 13.37을 넘어야 한다.</li>
+</ul>
+<h3 id="13-in-loop-ddg">1.3 조건부 in-loop 게이트 (ddG 프록시)</h3>
+<p>off-target 도킹은 비싸서(후보×5수용체) 매 iteration 전체 후보에 못 돌린다
+(<code>selectivity_loop.py:3-6</code>). 해결책은 <strong>ddG(루프 내 실측, 강한 신호)를 유망도 프록시로</strong>
+사용하여 도킹 대상을 제한하는 것.</p>
+<ul>
+<li>게이트 로직 <code>SelectivityLeaderboard.should_screen()</code> (<code>selectivity_loop.py:48-56</code>):
+  1. 이미 도킹한 서열이면 skip (<code>selectivity_loop.py:50-51</code>).
+  2. ddG가 cutoff(−10.0)보다 약하면 skip (<code>selectivity_loop.py:52-53</code>).
+  3. 리더보드 미충원이면 도킹 (<code>selectivity_loop.py:54-55</code>).
+  4. 충원 시 기존 top-K 최약체보다 ddG가 강하면 도킹 (<code>selectivity_loop.py:56</code>,
+     <code>worst_ddg()</code>=가장 높은 ddG, <code>selectivity_loop.py:43-46</code>).</li>
+<li>적격 필터 <code>screen_iteration_candidates()</code> (<code>selectivity_loop.py:96-118</code>):
+  fail 없음 + clash ≤ clash_max + <strong>이황화결합(Cys 위치) 보존</strong>(<code>_disulfide_ok</code>,
+  <code>selectivity_loop.py:99-100</code>) + PDB 존재.</li>
+<li>도킹 상한: iteration당 <code>max_screen_per_iter</code>개(기본 2, <code>selectivity_loop.py:124</code>),
+  ddG 강한 순으로 적용(<code>selectivity_loop.py:121</code>).</li>
+<li>결과 기록: <code>c.extra_scores</code>에 selectivity_margin / delta_margin / offtarget_ddg /
+  sstr2_ddg_sameprotocol 기록(<code>selectivity_loop.py:134-137</code>).</li>
+</ul>
+<h3 id="14-epoch-warm-start">1.4 epoch 간 학습 (warm-start)</h3>
+<p>무한 발굴 엔진에서 run 간 학습은 글로벌 리더보드로 이어진다.</p>
+<ul>
+<li><code>seed_from_global()</code> (<code>selectivity_loop.py:23-41</code>): 글로벌 리더보드에서
+  ① screened_seqs(역대 도킹 서열) → 재도킹 회피, ② 역대 top-K → in-loop 게이트 기준선 적재.
+  결과적으로 worst_ddg 임계가 끌어올려져 "역대 best보다 유망한 후보만" 도킹한다.</li>
+<li>호출 위치: <code>runner.py:495-501</code>(SelectivityLeaderboard 생성 + seed),
+  <code>runner.py:888-897</code>(iteration마다 screen_iteration_candidates 호출).</li>
+</ul>
+<hr />
+<h2 id="2">② 영향</h2>
+<h3 id="21">2.1 프로토콜 편향 수정 (전/후)</h3>
+<ul>
+<li><strong>수정 전(~2026-06-09)</strong>: SSTR2는 루프 내 ddG(별도 프로토콜), off-target은
+  transplant+pre-relax. 프로토콜이 다르면 margin이 프로토콜 차이를 선택성으로
+  오인하는 아티팩트가 발생(<code>multiobjective.py:402</code> 주석 "이전 아티팩트 수정").</li>
+<li><strong>수정 후(2026-06-10)</strong>: SSTR2도 동일 transplant+pre-relax로 재측정
+  (<code>multiobjective.py:401-407, 427, 433</code>). margin이 프로토콜 차이가 아닌
+  순수 수용체 친화도 차이를 반영하게 됨.</li>
+</ul>
+<h3 id="22-home-advantage">2.2 home-advantage 보정의 의미</h3>
+<p>source 구조 유래 편향(+13.37)을 빼므로, Δmargin&gt;0은 "native SST-14를 초과하는
+선택성"이라는 <strong>상대적·정직한</strong> 신호가 된다(<code>multiobjective.py:436-437</code>,
+<code>selectivity_loop.py:7</code>). 절대 margin만 보면 거의 모든 후보가 양수라 변별력이 없다.</p>
+<h3 id="23">2.3 비용/탐색 영향</h3>
+<p>ddG 프록시 게이트로 도킹 호출을 top-K 유망 후보로 제한 → in-loop에서도 선택성을
+측정 가능하게 만든 핵심 트릭(<code>selectivity_loop.py:3-6</code>). 게이트가 없으면 매
+iteration 후보×5수용체 도킹이 필요해 무한 루프가 사실상 불가능.</p>
+<hr />
+<h2 id="3-action-item-2026-06-10-goal">③ 관련 Action Item (2026-06-10 선택성 GOAL)</h2>
+<ul>
+<li>출처: <code>_workspace/CONTINUOUS_DISCOVERY.md</code>(직독). 핵심 정의 인용:</li>
+<li>"Δmargin = margin − native_margin(+13.37) — home-advantage 보정. &gt;0 = native SST-14 초과 선택성."</li>
+<li>"통과(passing) = Δmargin&gt;0 &amp; ΔG≤−15 &amp; 독성≤native(hc50). 오늘 GOAL 의 엄격 기준."</li>
+<li>즉 본 기능은 2026-06-10 "SSTR2 선택성" GOAL의 핵심 측정축이며,
+  무한 발굴 엔진(<code>continuous.py</code>)의 영속 학습 대상이다(<code>global_selectivity_leaderboard.json</code>).</li>
+<li>독성 게이트(hc50, home-advantage 대칭)는 <code>multiobjective.py:165, 172, 212</code>에서
+  Δmargin과 동일 철학으로 구현됨(상호 보완 축).</li>
+</ul>
+<hr />
+<h2 id="4">④ 완성도 (%) + 근거</h2>
+<p><strong>인프라 완성도: 약 90%</strong>
+- 게이트·Δmargin·동일프로토콜·병렬·warm-start·이황화 보존·fail-closed 전부 구현되고
+  runner에 통합(<code>runner.py:495-501, 888-897</code>). 회귀 테스트 존재
+  (<code>pyrosetta_flow/tests/test_continuous_discovery.py</code>, seed/게이트 케이스).
+- 실제 운영 데이터 축적: <code>n_screened_unique=539</code>, <code>n_ingested_total=564</code>
+  (<code>global_selectivity_leaderboard.json:5-6</code>) → 파이프라인이 실제로 대량 가동됨.</p>
+<p><strong>과학적 목표(임상급 선택성 입증) 완성도: 낮음~중간 (정성)</strong>
+- Δmargin은 PyRosetta 도킹 점수 차이(in-silico proxy)일 뿐, in-vitro 친화도/
+  기능 assay로 검증되지 않음(<code>multiobjective.py:13-17</code> 주석: "ddG·selectivity_margin
+  은 in-vitro 혈청 안정성/투과도 assay 로 검증되지 않았다").
+- off-target 수용체 PDB는 SSTR2 프레임에 0.93~0.95 사전정렬된 curated 구조
+  (<code>multiobjective.py:330-332</code>) → 구조 정렬 품질이 점수 신뢰도의 상한.</p>
+<p><strong>인프라/과학 구분 결론</strong>: 측정·게이트·학습 파이프라인은 사실상 완성. "선택성 후보
+발견"이라는 과학 목표는 in-silico 신호 수준에서 진행 중이며 실험 검증은 미수행(미검증).</p>
+<hr />
+<h2 id="5">⑤ 학술 가치: <strong>중상</strong></h2>
+<ul>
+<li><strong>근거(긍정)</strong>: SSTR2 표적 방사성의약품(예: DOTATATE 계열)에서 SSTR1/3/4/5 대비
+  선택성은 off-target 흡수/방사선 독성과 직결되는 임상적 핵심 변수다. native 대비
+  home-advantage 보정으로 "절대 점수 편향"을 제거하고 상대 선택성만 추출한 방법론은
+  in-silico 선택성 스크리닝에서 정직성이 높은 설계다.</li>
+<li><strong>근거(한계로 인한 감점)</strong>: Δmargin은 도킹 점수 proxy이며 실험 검증 부재
+  (<code>multiobjective.py:13-17</code>). off-target 구조 정렬·단일체인 추출 가정이 결과에 영향.
+  따라서 "상"이 아닌 "중상" — 방법론·엔지니어링은 발표 가치 있으나, 결과의 생물학적
+  주장은 wet-lab 검증 전제 하에만 성립.</li>
+</ul>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<pre><code class="language-bash">ENV=~/miniforge3/envs/bio-tools/bin/python
+cd AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri
+
+# 무한 발굴(선택성 게이트 포함, STOP 파일로 정지)
+$ENV scripts/run_continuous_discovery.py \
+    --input data/somatostatin_receptor/SSTR2_SST14_complex_boltz_1.pdb \
+    --n-candidates 8 --max-iterations 4 --top-k 5 --selectivity-max-per-iter 2
+</code></pre>
+<p>(출처: <code>_workspace/CONTINUOUS_DISCOVERY.md</code> 실행 섹션 직독)</p>
+<ul>
+<li>정지: <code>touch _workspace/STOP_DISCOVERY</code> (graceful), 재시작 전 <code>rm</code>.</li>
+<li>iteration당 도킹 개수 조절: <code>--selectivity-max-per-iter</code>(→ <code>max_screen_per_iter</code>,
+  <code>selectivity_loop.py:124</code>).</li>
+<li>결과 확인: <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code>
+  (<code>best_delta_margin</code>, entries의 delta_margin).</li>
+<li>프로그램 직접 사용: <code>from pyrosetta_flow.multiobjective import screen_selectivity</code>
+  → dict(selectivity_margin, delta_margin, more_selective_than_native, ...) 반환
+  (<code>multiobjective.py:361, 440-450</code>).</li>
+</ul>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<ul>
+<li>SSTR2 선택성은 도킹 전에 알 수 없고 측정이 비싸다(<code>selectivity_loop.py:3-6</code>).
+  ddG 프록시 게이트가 없으면 무한 루프에서 선택성을 전혀 측정할 수 없다.</li>
+<li>절대 margin은 source-구조 편향으로 변별력이 없다 → home-advantage 보정(Δmargin)이
+  없으면 "native 대비 실제 개선"을 구분할 수 없다(<code>multiobjective.py:436-437</code>).</li>
+<li>동일 프로토콜 보정이 없으면 프로토콜 차이를 선택성으로 오인한다(이전 아티팩트,
+  <code>multiobjective.py:402</code>).</li>
+</ul>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<table>
+<thead>
+<tr>
+<th>주장</th>
+<th>인용</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>off-target 5종 동일 프로토콜 도킹</td>
+<td><code>multiobjective.py:333-338, 401-410</code></td>
+</tr>
+<tr>
+<td>margin = min(offtarget) − sstr2</td>
+<td><code>multiobjective.py:434-435</code></td>
+</tr>
+<tr>
+<td>Δmargin = margin − native_margin</td>
+<td><code>multiobjective.py:438-439</code></td>
+</tr>
+<tr>
+<td>native baseline +13.37 (검산 13.366)</td>
+<td><code>native_selectivity_baseline.json:1</code></td>
+</tr>
+<tr>
+<td>조건부 ddG 게이트</td>
+<td><code>selectivity_loop.py:48-56</code></td>
+</tr>
+<tr>
+<td>이황화 보존 필터</td>
+<td><code>selectivity_loop.py:99-100</code></td>
+</tr>
+<tr>
+<td>iteration당 도킹 상한(2)</td>
+<td><code>selectivity_loop.py:124</code></td>
+</tr>
+<tr>
+<td>warm-start seed_from_global</td>
+<td><code>selectivity_loop.py:23-41</code></td>
+</tr>
+<tr>
+<td>runner 통합</td>
+<td><code>runner.py:495-501, 888-897</code></td>
+</tr>
+<tr>
+<td>실험 검증 부재 disclaimer</td>
+<td><code>multiobjective.py:13-17</code></td>
+</tr>
+<tr>
+<td>GOAL 통과 기준</td>
+<td><code>_workspace/CONTINUOUS_DISCOVERY.md</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="_2">현재 리더보드 실측 요약</h2>
+<p>출처: <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code> 직독
+(2026-06-17 분석 시점).</p>
+<ul>
+<li><code>best_delta_margin</code> = <strong>+9.1021</strong> (서열 <code>ARCGKFFWKTATSC</code>, margin 22.4721, ddG −32.1162;
+  파일 line 9-17).</li>
+<li>리더보드 capacity=50, <strong>entries 50건 전부 delta_margin &gt; 0</strong> (최저 +0.3777, 최고 +9.1021).
+  → 즉 native(+13.37)를 초과하는 선택성 후보가 top-50 리더보드에 50건 적재됨.</li>
+<li>누적 통계: <code>n_screened_unique</code> = <strong>539</strong> (실제 off-target 도킹한 고유 서열),
+  <code>n_ingested_total</code> = <strong>564</strong> (line 5-6).</li>
+</ul>
+<h3 id="_3">정직성 주의 (프롬프트 수치 정정)</h3>
+<ul>
+<li>프롬프트의 "현재 best Δ+0.077, native 초과 소수"는 <strong>현 측정과 불일치</strong>한다.
+  실측 best는 <strong>Δ+0.077이 아니라 Δ+9.1021</strong>이며, top-50 리더보드 entries는 전부 Δ&gt;0이다.
+  "+0.077"은 2026-06-10 초기 스냅샷(당시 1건만 native 초과) 기준으로 추정되며,
+  이후 무한 발굴(539 서열 도킹)로 다수 후보가 native를 초과한 것으로 보인다.</li>
+<li>단, 위 Δ&gt;0은 <strong>PyRosetta 도킹 점수 proxy 기준</strong>이며 wet-lab 검증이 아님을 재차 명시
+  (<code>multiobjective.py:13-17</code>). "native 초과 선택성"은 in-silico 신호 한정 주장이다.</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

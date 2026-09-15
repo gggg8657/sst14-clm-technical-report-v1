@@ -1,0 +1,256 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>♾️ 무한 발굴 엔진 · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html" class="active">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="08">08. 무한 발굴 엔진 + 영속성 — 기능 분석 보고서</h1>
+<blockquote>
+<p>분석 루트: <code>AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri</code>
+대상: <code>pyrosetta_flow/continuous.py</code>, <code>pyrosetta_flow/global_leaderboard.py</code>, <code>runner.py</code>(baseline_cache·warm-start·ingest), <code>scripts/run_continuous_discovery.py</code>, <code>scripts/autopush_results.sh</code>(루트), <code>experiment_log.jsonl</code> dedup
+원칙: 모든 사실은 <code>file_path:line</code> 인용. 코드로 미확인된 항목은 "미검증"으로 명시. 읽기 전용 분석.</p>
+</blockquote>
+<hr />
+<h2 id="1">① 동작 원리</h2>
+<h3 id="11-epoch-while-stop">1.1 epoch 무한 루프 (while + STOP)</h3>
+<p>엔진의 심장은 <code>run_continuous_discovery()</code>의 <code>while True:</code> 루프다 (<code>pyrosetta_flow/continuous.py:125</code>). 각 epoch 시작 시 두 종료 조건을 먼저 검사한다.</p>
+<ul>
+<li><strong>STOP 파일 감지</strong>: <code>stop_path.exists()</code> 이면 <code>stop_reason="stop_file"</code> 로 graceful 종료 (<code>continuous.py:126-129</code>).</li>
+<li><strong>max_epochs 도달</strong>: <code>max_epochs</code> 가 정수면 그만큼만, <code>None</code> 이면 무한 (<code>continuous.py:130-132</code>).</li>
+</ul>
+<p>종료 조건 통과 후 <code>epoch += 1</code> 하고 (<code>continuous.py:134</code>) 본 작업을 수행한다. 즉 STOP 파일은 "현재 epoch 까지 마치고" 멈추는 게 아니라 <strong>다음 epoch 진입 직전</strong>에 검사되므로, 진행 중인 epoch 은 끝까지 완주한다.</p>
+<p>세 번째 종료 경로는 <strong>목표 도달 자동 정지</strong>다: control 의 <code>target_pass_count</code> 와 <code>stop_on_target=true</code> 가 동시에 설정되면, 글로벌 리더보드의 통과 건수가 목표 이상일 때 <code>stop_reason="target_reached"</code> 로 종료한다 (<code>continuous.py:145-152</code>).</p>
+<p>epoch 실패는 루프를 죽이지 않는다 — <code>run_pyrosetta_agentic_mutdock_flow(cfg)</code> 를 try/except 로 감싸 예외를 <code>err</code> 에 기록하고 continue 한다 (<code>continuous.py:159-166</code>).</p>
+<h3 id="12-patience-seed">1.2 다양성 탈출 (patience 정체 → 변이 수↑ + seed 이동)</h3>
+<p><code>DiversityPolicy</code> 클래스 (<code>continuous.py:57-84</code>)가 local optimum 탈출을 담당한다.</p>
+<ul>
+<li>글로벌 best Δmargin 이 개선되면 (<code>global_best &gt; self._best + 1e-9</code>) <code>level=0</code>, <code>_stale=0</code> 으로 리셋 — 탐색 집중 모드 복귀 (<code>continuous.py:72-76</code>).</li>
+<li>개선이 없으면 <code>_stale += 1</code>, <code>_stale &gt;= patience</code> 이면 <code>level += 1</code> (다양성 단계 상승) 후 stale 리셋 (<code>continuous.py:77-81</code>).</li>
+<li>다음 epoch 변이 수 = <code>min(max_mutations_cap, base_mutations + level)</code> (<code>continuous.py:82</code>). 즉 정체가 길수록 변이 수가 cap(기본 6)까지 단조 증가.</li>
+</ul>
+<p>epoch 마다 <strong>seed 도 이동</strong>시켜 탐색 영역을 옮긴다: <code>seed_base = base_config.seed_base + epoch * 1000</code> (<code>continuous.py:139</code>). 직전 epoch 이 결정한 <code>next_max_mutations</code> 를 다음 epoch 의 <code>max_random_mutations</code> 로 주입한다 (<code>continuous.py:141-142</code>).</p>
+<p>실측 상태 파일 기준 현재 <code>diversity_level: 29</code>, <code>epochs_done: 96</code> (<code>runs/pyrosetta_flow/discovery_status.json</code> 헤더) — 장기간 best 정체 시 레벨이 계속 누적되나, 실제 변이 수는 cap(6)에서 포화된다 (<code>continuous.py:82</code> 의 <code>min</code>).</p>
+<h3 id="13-control">1.3 control 파일 핫 리로드 (재시작 불필요)</h3>
+<p>매 epoch 시작 시 control JSON 을 다시 읽는다: <code>control = _read_json(control_path)</code> (<code>continuous.py:135</code>). 안전 화이트리스트 <code>_CONTROL_FIELDS</code> (<code>continuous.py:28-32</code>)에 속한 필드만 <code>replace(base, **overrides)</code> 로 base config 에 덮어쓴다 (<code>_apply_control</code>, <code>continuous.py:51-54</code>). <code>template_pdb</code> 같은 구조적 필드는 화이트리스트에 없어 무시된다 — 실행 중 사람이 knobs 만 안전하게 조절 가능.</p>
+<p>화이트리스트 필드: <code>n_candidates, max_iterations, top_k, selectivity_max_per_iter, max_random_mutations, rosetta_ddg_max, objective_mode, design_positions, validation_n_trials, selectivity_top_k</code> (<code>continuous.py:28-32</code>).</p>
+<h3 id="14-warm-start-run">1.4 warm-start (run 간 누적 학습의 적용 지점)</h3>
+<p>엔진은 base config 에 <code>inloop_selectivity=True, reuse_baseline=True</code> 를 강제한다 (<code>continuous.py:110</code>). warm-start 는 runner 내부에서 두 층으로 작동한다.</p>
+<ol>
+<li><strong>서열 dedup (experiment_log.jsonl)</strong>: runner 가 prior records 를 로드해 (<code>runner.py:328</code>) <code>extract_historical_sequences()</code> 로 과거 시도 서열 집합을 만들고 (<code>runner.py:331</code>), dedup 에 사용. n_prior 를 stderr 로 보고 (<code>runner.py:334-335</code>).</li>
+<li><strong>선택성 warm-start (global leaderboard)</strong>: in-loop 선택성이 켜지면 <code>GlobalSelectivityLeaderboard.load()</code> 로 영속 리더보드를 읽고 (<code>runner.py:499</code>), 엔트리·screened 서열이 있으면 <code>_sel_leaderboard.seed_from_global(...)</code> 로 in-loop 리더보드를 warm-start 한다 (<code>runner.py:500-503</code>). 이로써 ① 역대 도킹 서열 재도킹 회피 ② 게이트 기준선(worst_ddg) 상향이 일어난다 (<code>selectivity_loop.py:23-41</code>).</li>
+</ol>
+<h3 id="15-baseline-1">1.5 baseline 1회 측정 후 캐시</h3>
+<p>native SST-14 baseline(비교 기준 ddG)은 매 epoch 재도킹하면 낭비이므로 첫 epoch 만 측정하고 캐시한다.</p>
+<ul>
+<li>재사용 조건: <code>reuse_baseline=True</code> 이고 <code>baseline_cache.json</code> 이 존재하며, <strong>같은 template_pdb + 같은 native 서열</strong>일 때만 (<code>runner.py:349-354</code>). 안전 가드로 캐시 오염을 방지.</li>
+<li>캐시 적중 시 재도킹을 생략하고 비교용 PDB 만 현재 epoch 경로로 복사, ddG/total/clash 를 캐시에서 복원 (<code>runner.py:358-366</code>).</li>
+<li>캐시 미스 시 best-of-N trial 로 측정 후(<code>runner.py:368-392</code>), <code>reuse_baseline</code> 이면 <code>baseline_cache.json</code> + <code>baseline_cached.pdb</code> 로 저장 (<code>runner.py:394-408</code>). 저장 실패는 non-fatal (<code>runner.py:407-408</code>).</li>
+</ul>
+<h3 id="16-epoch-ingest">1.6 epoch 종료 시 영속 (ingest)</h3>
+<p>run 종료 시 이번 run 의 선택성 측정을 글로벌 리더보드에 누적한다: <code>_global_lb.ingest_artifacts(artifacts.to_dict())</code> → <code>_global_lb.save(_global_lb_path)</code> (<code>runner.py:1543-1548</code>). 영속 실패도 non-fatal (<code>runner.py:1549-1550</code>).</p>
+<hr />
+<h2 id="2-run">② 영향: run 간 누적 학습</h2>
+<p>엔진의 핵심 가치는 "단발 run 의 일회성 결과" 를 "디스크에 영속되는 누적 지식" 으로 바꾸는 데 있다. 두 영속 파일이 상보적으로 작동한다.</p>
+<table>
+<thead>
+<tr>
+<th>축</th>
+<th>영속 파일</th>
+<th>역할</th>
+<th>인용</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>서열 dedup + bandit</td>
+<td><code>experiment_log.jsonl</code></td>
+<td>시도 서열 재생성 회피, 위치 탐색 warm-start</td>
+<td><code>runner.py:328-335</code>, <code>ranking.py:35-41</code></td>
+</tr>
+<tr>
+<td>선택성(Δmargin)</td>
+<td><code>global_selectivity_leaderboard.json</code></td>
+<td>역대 Δmargin best, 도킹 서열 dedup, in-loop warm-start</td>
+<td><code>global_leaderboard.py:42-67</code>, <code>runner.py:499-503</code></td>
+</tr>
+<tr>
+<td>진행 상황</td>
+<td><code>discovery_status.json</code></td>
+<td>epoch·역대 best·통과 수·다양성 레벨</td>
+<td><code>continuous.py:190-200</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Δmargin = selectivity_margin − native_margin</strong> (home-advantage 보정; &gt;0 = native 초과 선택성) (<code>global_leaderboard.py:8</code>). Δ 미계산(post-loop 경로 등)이면 native baseline 으로 backfill 한다 (<code>global_leaderboard.py:94-98</code>): <code>_native_margin()</code> 이 <code>data/somatostatin_receptor/curated/native_selectivity_baseline.json</code> 의 <code>margin</code> 을 캐시 로드 (<code>global_leaderboard.py:28-39</code>).</p>
+<p><strong>dedup 동작 형태</strong>: dedup 은 write 시점이 아니라 <strong>read 시점의 set 기반</strong>이다. <code>experiment_log.jsonl</code> 은 append-only (<code>ranking.py:8-15</code>)이고, 로드 시 <code>record_type=="candidate"</code> 인 서열을 set 으로 추출해 중복을 무효화한다 (<code>ranking.py:35-41</code>). 글로벌 리더보드도 동일 서열은 더 높은 Δmargin 측정으로만 갱신하고(<code>global_leaderboard.py:111-118</code>), <code>screened_seqs</code> set 으로 재도킹을 막는다(<code>global_leaderboard.py:59-64</code>).</p>
+<p><strong>누적 학습의 실증</strong> (<code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code> 헤더): <code>n_screened_unique: 539</code>, <code>n_ingested_total: 564</code>, <code>n_unique: 50</code>(capacity), <code>best_delta_margin: 9.1021</code>. 즉 96 epoch 누적으로 539 개 고유 서열을 도킹했고, 중복 측정(564−539=25건)은 더 나은 Δ 만 유지 정책으로 흡수됐다.</p>
+<p><strong>fail-open / fail-closed 균형</strong>:
+- 리더보드 로드 손상 시 빈 리더보드로 시작 (fail-open: 발굴은 계속) (<code>global_leaderboard.py:65-66</code>).
+- 통과 판정은 독성 미측정(None)을 보수적으로 불통과 처리 (fail-closed: 가짜 통과 방지) (<code>global_leaderboard.py:167-179</code>).</p>
+<hr />
+<h2 id="3-action-item">③ 관련 Action Item: 무한 엔진 구축</h2>
+<p>메모리/진행 기록상 무한 발굴 엔진 구축은 SSTR2 선택성 GOAL(2026-06-10)의 산출물로 명시돼 있다. 코드 관점의 구성 요소는 다음 신규 모듈로 완결된다.</p>
+<ul>
+<li><code>continuous.py</code> — epoch 루프 + DiversityPolicy + control/STOP/status 제어 (<code>continuous.py</code> 전체)</li>
+<li><code>global_leaderboard.py</code> — 영속 Δmargin 리더보드 + ingest + backfill + warm-start payload (<code>global_leaderboard.py</code> 전체)</li>
+<li><code>runner.py</code> 의 baseline_cache·global warm-start·ingest 통합 (<code>runner.py:344-408, 491-504, 1542-1550</code>)</li>
+<li><code>scripts/run_continuous_discovery.py</code> — CLI 진입점 (<code>scripts/run_continuous_discovery.py</code> 전체)</li>
+<li><code>scripts/autopush_results.sh</code> (루트) — 6h 결과 push (<code>scripts/autopush_results.sh</code> 전체)</li>
+</ul>
+<p>프로젝트 진행 보고서가 이 Action Item 을 "선택성 방법론·인프라(무한 발굴 엔진) 100%" 로 기록한다 (<code>_workspace/reports/01_PROGRESS_REPORT_2026-06-17.md:15, :128</code>).</p>
+<hr />
+<h2 id="4">④ 완성도 평가</h2>
+<p><strong>완성도: 약 90%</strong> (방법론·인프라 골격은 완성, 운영 자동화·문서의 일부가 외부 의존).</p>
+<table>
+<thead>
+<tr>
+<th>항목</th>
+<th>상태</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>epoch 무한 루프 + 3종 종료(STOP/max/target)</td>
+<td>완성</td>
+<td><code>continuous.py:125-152</code></td>
+</tr>
+<tr>
+<td>DiversityPolicy(정체 탈출·seed 이동·변이 cap)</td>
+<td>완성</td>
+<td><code>continuous.py:57-84, 139-142</code></td>
+</tr>
+<tr>
+<td>control 핫 리로드(화이트리스트)</td>
+<td>완성</td>
+<td><code>continuous.py:28-32, 135-136</code></td>
+</tr>
+<tr>
+<td>baseline 캐시(안전 가드 포함)</td>
+<td>완성</td>
+<td><code>runner.py:344-408</code></td>
+</tr>
+<tr>
+<td>글로벌 리더보드 영속(load/save/ingest/backfill/dedup)</td>
+<td>완성</td>
+<td><code>global_leaderboard.py</code> 전체</td>
+</tr>
+<tr>
+<td>warm-start(experiment_log + global LB 2층)</td>
+<td>완성</td>
+<td><code>runner.py:328-335, 499-503</code></td>
+</tr>
+<tr>
+<td>회귀 테스트</td>
+<td>완성(9개)</td>
+<td><code>pyrosetta_flow/tests/test_continuous_discovery.py:11-113</code></td>
+</tr>
+<tr>
+<td>atomic write(status/leaderboard)</td>
+<td>완성</td>
+<td><code>continuous.py:44-48</code>, <code>global_leaderboard.py:80-82</code></td>
+</tr>
+<tr>
+<td>실 운영 가동</td>
+<td>가동 중</td>
+<td><code>discovery_status.json</code>: <code>running:true, epochs_done:96, elapsed≈579,448s(≈6.7일)</code></td>
+</tr>
+<tr>
+<td>6h autopush <strong>스케줄러</strong></td>
+<td>부분</td>
+<td>스크립트는 완성(<code>autopush_results.sh</code>)·커밋 cadence 는 6h 간격 실증(아래 ⑥)이나, cron/timer 등록 정의 파일이 리포에 미확인 → <strong>스케줄링 주체 미검증</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>테스트 커버리지</strong> (<code>test_continuous_discovery.py</code>): dedup·best 갱신, save/load roundtrip, count_passing, ingest_artifacts, warm-start dedup·gate, capacity 채움 전 탐색, DiversityPolicy 정체-탈출·리셋, 변이 cap, control 화이트리스트 — 9개 (<code>test_continuous_discovery.py:11, 24, 36, 49, 70, 83, 94, 104, 113</code>).</p>
+<p><strong>감점 사유 (≈10%)</strong>:
+1. autopush 의 6h 트리거(cron/systemd timer/tmux watch loop)가 리포 내 정의 파일로 확인되지 않음 — 스케줄링은 환경 외부에 존재할 가능성. 스크립트 자체는 멱등·fail-safe (<code>autopush_results.sh:25-35</code>). <strong>미검증</strong>.
+2. <code>discovery_status.json</code> 의 <code>top[].ts</code> 가 빈 문자열 — 타임스탬프가 ingest 경로에서 누락(<code>global_leaderboard.py:99-109</code> 의 <code>ts=c.get("ts","")</code>, candidate 에 ts 부재). 기능 영향은 경미하나 추적성 손실.</p>
+<hr />
+<h2 id="5">⑤ 학술적 가치: 자율 발굴 루프</h2>
+<p>본 엔진은 <strong>닫힌 자율 설계-측정-학습 루프(closed-loop autonomous discovery)</strong> 를 펩타이드 방사성의약품 선택성 최적화에 구현한 사례다.</p>
+<ul>
+<li><strong>자율성</strong>: 사람 개입 없이 STOP 까지 무한히 변이→도킹→선택성 측정→피드백을 반복. 수렴 시 종료가 아니라 다양성 주입으로 계속 탐색하는 것이 설계 의도 (<code>continuous.py:10-11</code>, <code>CONTINUOUS_DISCOVERY.md:70</code>).</li>
+<li><strong>explore/exploit 균형의 명시적 정책화</strong>: DiversityPolicy 가 best 정체를 신호로 변이 수를 단조 증가시키고 개선 시 base 로 리셋 — 이는 simulated-annealing 류 재가열(reheating)/restart 휴리스틱을 epoch 단위로 구현한 것 (<code>continuous.py:69-84</code>).</li>
+<li><strong>영속 메모리에 의한 누적 학습</strong>: run 을 거듭할수록 dedup 으로 탐색 공간 중복을 제거하고, 글로벌 리더보드가 게이트 기준선을 끌어올려 점점 "역대 best 보다 유망한 후보만" 비싼 off-target 도킹에 투입(비용-편익 최적화) (<code>selectivity_loop.py:43-56</code>).</li>
+<li><strong>정직성 가드</strong>: home-advantage(Δmargin) 보정으로 native 대비 진짜 초과 선택성만 평가하고 (<code>global_leaderboard.py:8</code>), 독성 미측정을 통과로 인정하지 않는 fail-closed 통과 판정 (<code>global_leaderboard.py:167-179</code>). 환각·가짜 성공 방지를 방법론에 내장.</li>
+</ul>
+<p>실측상 96 epoch / ≈6.7일 연속 가동으로 539 고유 서열을 스크리닝하고 best Δ=+9.10, 통과 47건을 누적 — 자율 루프가 실제로 점증적 발견을 산출함을 보인다 (<code>discovery_status.json</code> 헤더, <code>global_selectivity_leaderboard.json</code> 헤더).</p>
+<hr />
+<h2 id="6">⑥ 사용법</h2>
+<h3 id="stop">가동 (무한; STOP 파일로 정지)</h3>
+<pre><code class="language-bash">ENV=~/miniforge3/envs/bio-tools/bin/python
+cd AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri
+$ENV scripts/run_continuous_discovery.py \
+    --input data/somatostatin_receptor/SSTR2_SST14_complex_boltz_1.pdb \
+    --n-candidates 8 --max-iterations 4 --top-k 5 --selectivity-max-per-iter 2
+</code></pre>
+<p>(<code>CONTINUOUS_DISCOVERY.md:19-31</code>, CLI 인자: <code>scripts/run_continuous_discovery.py:26-55</code>)</p>
+<p>tmux 등 장기 세션에서 백그라운드 가동 권장 — 엔진은 STOP 까지 무한 루프이므로 분리된 세션 필요(운영 관행; tmux 구체 명령은 리포 내 미확인 → <strong>미검증</strong>).</p>
+<h3 id="stop_1">정지 (STOP 파일)</h3>
+<pre><code class="language-bash">touch _workspace/STOP_DISCOVERY      # 현재 epoch 마치고 graceful 종료
+rm   _workspace/STOP_DISCOVERY       # 다음 실행 전 반드시 삭제
+</code></pre>
+<p>(<code>CONTINUOUS_DISCOVERY.md:35-39</code>; STOP 검사 <code>continuous.py:126-129</code>, 기본 경로 <code>scripts/run_continuous_discovery.py:50-51</code>)</p>
+<h3 id="control">실시간 조절 (control 파일 — 재시작 불필요)</h3>
+<p><code>_workspace/discovery_control.json</code> 편집 → 다음 epoch 부터 반영 (<code>continuous.py:135</code>). 실제 파일 내용 예 (<code>_workspace/discovery_control.json</code>):</p>
+<pre><code class="language-json">{ &quot;n_candidates&quot;: 8, &quot;max_iterations&quot;: 20, &quot;top_k&quot;: 5,
+  &quot;selectivity_max_per_iter&quot;: 2, &quot;rosetta_ddg_max&quot;: -15.0, &quot;objective_mode&quot;: &quot;auto&quot;,
+  &quot;patience&quot;: 3, &quot;base_mutations&quot;: 3, &quot;max_mutations_cap&quot;: 6,
+  &quot;target_pass_count&quot;: 3, &quot;stop_on_target&quot;: false }
+</code></pre>
+<p>knobs 표는 <code>CONTINUOUS_DISCOVERY.md:44-52</code>.</p>
+<h3 id="_1">모니터링</h3>
+<pre><code class="language-bash">cat runs/pyrosetta_flow/discovery_status.json | python -m json.tool
+# global_best_delta_margin, passing_count, diversity_level, top[], history[]
+</code></pre>
+<p>(<code>continuous.py:190-200</code>, <code>CONTINUOUS_DISCOVERY.md:73-76</code>)</p>
+<h3 id="6h-autopush-github">6h autopush (외부 모니터링용 GitHub 스냅샷)</h3>
+<p><code>scripts/autopush_results.sh</code> (루트 <code>SST14-M_scr/scripts/</code>)가 결과 경로만 <code>git add -f</code> 로 강제 스테이징(.gitignore 무시), 변경 없으면 skip, 실패해도 죽지 않음(다음 주기 재시도) (<code>autopush_results.sh:14-35</code>). push 대상: experiment_log, discovery_status, global leaderboard, baseline_cache, run 로그/산출물 (<code>autopush_results.sh:14-23</code>).
+- <strong>6h 주기 실증</strong>: 커밋 cadence 가 00:22 → 06:21 → 12:21 → 18:22 → 00:22 로 약 6시간 간격 (git log autopush 커밋). 단 트리거 정의(cron/timer) 파일은 리포 내 미확인 → 스케줄러 주체 <strong>미검증</strong>.</p>
+<hr />
+<h2 id="7">⑦ 필요 이유</h2>
+<ol>
+<li><strong>단발 run 의 한계 극복</strong>: 변이 공간(14aa × 20 AA)은 단발 run 으로 탐색 불가. epoch 루프 + seed 이동으로 공간을 점진 스윕한다 (<code>continuous.py:139</code>).</li>
+<li><strong>비싼 측정의 재사용</strong>: 선택성 도킹(후보 × off-target 수용체)은 고비용이라 매 iteration 전체 후보에 못 돌린다 (<code>selectivity_loop.py:3-6</code>). baseline 캐시(<code>runner.py:344-408</code>) + screened dedup(<code>global_leaderboard.py:59-64</code>)으로 중복 도킹을 제거해 GPU·시간 예산을 절약한다.</li>
+<li><strong>수렴 정체 탈출</strong>: 단순 best 추종은 local optimum 에 갇힌다. DiversityPolicy 가 정체를 감지해 변이 다양성을 끌어올려 탈출시킨다 (<code>continuous.py:69-84</code>).</li>
+<li><strong>무중단 사람 조절</strong>: 장기 가동 중 파라미터를 바꾸려 재시작하면 누적 상태가 끊긴다. control 핫 리로드로 재시작 없이 조절 (<code>continuous.py:135</code>).</li>
+<li><strong>외부 가시성·내구성</strong>: 6h autopush 로 결과를 GitHub 에 스냅샷해 원격 모니터링·복구 지점을 제공 (<code>autopush_results.sh:1-3</code>).</li>
+<li><strong>정직한 평가의 영속화</strong>: home-advantage Δmargin + fail-closed 통과 판정을 디스크에 누적해, run 간 비교가 환각 없이 일관되게 유지된다 (<code>global_leaderboard.py:8, 167-179</code>).</li>
+</ol>
+<hr />
+<h2 id="_2">검증 인용 목록</h2>
+<ul>
+<li>epoch 무한 while + STOP/max_epochs: <code>pyrosetta_flow/continuous.py:125-132</code></li>
+<li>목표 도달 자동 정지: <code>pyrosetta_flow/continuous.py:145-152</code></li>
+<li>epoch 실패 격리(continue): <code>pyrosetta_flow/continuous.py:159-166</code></li>
+<li>DiversityPolicy(정체→level↑, 개선→reset, 변이 cap): <code>pyrosetta_flow/continuous.py:57-84</code></li>
+<li>seed 이동 + 직전 변이 수 주입: <code>pyrosetta_flow/continuous.py:139-142</code></li>
+<li>control 화이트리스트 + 핫 리로드: <code>pyrosetta_flow/continuous.py:28-32, 135-136</code></li>
+<li>atomic write(status): <code>pyrosetta_flow/continuous.py:44-48, 190-200</code></li>
+<li>엔진 강제 플래그(inloop_selectivity·reuse_baseline): <code>pyrosetta_flow/continuous.py:110</code></li>
+<li>Δmargin 정의 + native backfill: <code>pyrosetta_flow/global_leaderboard.py:8, 28-39, 94-98</code></li>
+<li>load fail-open / save atomic: <code>pyrosetta_flow/global_leaderboard.py:52-67, 69-82</code></li>
+<li>add_measurement(동일 서열 더 나은 Δ만 유지): <code>pyrosetta_flow/global_leaderboard.py:85-121</code></li>
+<li>ingest_artifacts: <code>pyrosetta_flow/global_leaderboard.py:123-150</code></li>
+<li>count_passing(fail-closed 독성): <code>pyrosetta_flow/global_leaderboard.py:167-179</code></li>
+<li>warm_start_payload: <code>pyrosetta_flow/global_leaderboard.py:181-183</code></li>
+<li>baseline 캐시(안전 가드·복원·저장): <code>pyrosetta_flow/runner.py:344-408</code></li>
+<li>experiment_log dedup 로드: <code>pyrosetta_flow/runner.py:328-335</code>, <code>pyrosetta_flow/ranking.py:8-15, 18-41</code></li>
+<li>global LB warm-start 연결: <code>pyrosetta_flow/runner.py:491-504</code></li>
+<li>epoch 종료 ingest·save: <code>pyrosetta_flow/runner.py:1542-1550</code></li>
+<li>seed_from_global(dedup + 게이트 상향): <code>pyrosetta_flow/selectivity_loop.py:23-56</code></li>
+<li>CLI 인자·기본 경로: <code>scripts/run_continuous_discovery.py:26-55, 61-90</code></li>
+<li>autopush(강제 스테이징·skip·fail-safe): <code>scripts/autopush_results.sh:14-35</code></li>
+<li>회귀 테스트 9개: <code>pyrosetta_flow/tests/test_continuous_discovery.py:11, 24, 36, 49, 70, 83, 94, 104, 113</code></li>
+<li>실 운영 상태(96 epoch, best Δ9.10, 통과 47): <code>runs/pyrosetta_flow/discovery_status.json</code>(헤더), <code>runs/pyrosetta_flow/global_selectivity_leaderboard.json</code>(헤더)</li>
+<li>6h 커밋 cadence: git log autopush 커밋(00:22/06:21/12:21/18:22)</li>
+<li>사용법 출처: <code>_workspace/CONTINUOUS_DISCOVERY.md:17-81</code></li>
+</ul>
+<h3 id="_3">미검증 항목</h3>
+<ul>
+<li>autopush 6h 트리거(cron/systemd/tmux watch)의 정의 파일 — 리포 내 미확인. 스크립트 자체와 커밋 간격 실증만 확인됨.</li>
+<li>tmux 백그라운드 가동의 구체 명령 — 리포 내 미확인(운영 관행 추정).</li>
+<li><code>discovery_status.json</code> <code>top[].ts</code> 빈 문자열 — candidate ts 부재에 기인(기능 영향 경미).</li>
+</ul></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>

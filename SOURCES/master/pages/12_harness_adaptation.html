@@ -1,0 +1,451 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🧩 하네스 어댑테이션 (메타) · SSTR2 발굴 시스템 보고서</title>
+<link rel="stylesheet" href="../assets/style.css"><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>mermaid.initialize({startOnLoad:true,theme:"neutral"});</script></head>
+<body><div class="layout"><aside class="sidebar"><div class="brand"><h1>SSTR2 발굴 시스템</h1><span>TECHNICAL REPORT</span></div><nav><a href="../index.html">🏠 개요 (메인)</a><div class="navgroup">검증·벤치마크</div><a href="14_benchmark_validation.html">🧪 벤치마크: 반감기 (문헌 vs 예측)</a><a href="15_admet_benchmark.html">🧫 벤치마크: ADMET (물성·독성)</a><div class="navgroup">발굴 파이프라인</div><a href="01_mutation_scaffold.html">🧬 변이 엔진 & Scaffold 가드</a><a href="02_pyrosetta_docking.html">⚛️ PyRosetta 도킹 (실측 ΔG)</a><a href="03_selectivity_dmargin.html">🎯 선택성 · Δmargin</a><a href="06_multiobjective_scoring.html">📊 다목적 스코어링</a><a href="08_continuous_engine.html">♾️ 무한 발굴 엔진</a><div class="navgroup">약리 surrogate</div><a href="04_halflife_ensemble.html">⏳ 혈중 반감기 앙상블</a><a href="05_admet_toxicity.html">🛡️ ADMET · 독성 게이트</a><div class="navgroup">최적화·메타</div><a href="07_search_optimization.html">🔍 탐색 최적화 (Bandit/BO/수렴)</a><a href="09_llm_agents.html">🤖 LLM 에이전트 (Planner/Critic/Reporter)</a><a href="11_qc_validation.html">✅ QC·검증 & fail-closed</a><a href="12_harness_adaptation.html" class="active">🧩 하네스 어댑테이션 (메타)</a><a href="13_diversity_cluster.html">🌐 다양성 · 클러스터링</a><div class="navgroup">운영·UI</div><a href="10_web_ui.html">🖥️ 웹 UI (FastAPI+React+Mol*)</a><div class="navgroup">맥락·비교</div><a href="R1_comparison.html">⚖️ 기존 시스템 비교</a><a href="R2_academic_context.html">📚 학술·임상 맥락</a></nav></aside>
+<main class="main"><div class="wrap"><p style="color:var(--muted);font-size:12px;letter-spacing:1px">기능 상세 보고</p><h1 id="12-harness-adaptation">12. 하네스 어댑테이션 (Harness Adaptation) 기능 분석 보고서</h1>
+<blockquote>
+<p>대상: 하네스 어댑테이션 메타 인프라 (Stage 0~9, VR-cycle 자가검증, 6-패턴 위임 트리)
+루트: <code>[LOCAL_PATH]</code>
+규칙: 모든 사실 주장에 <code>file_path:line</code> 또는 직접 인용 첨부. 미확인 항목은 §검증 필요에 기록. 읽기 전용 분석.
+작성: 2026-06-17</p>
+</blockquote>
+<hr />
+<h2 id="0">0. 한 줄 정의</h2>
+<p>하네스 어댑테이션은 <strong>발굴 정확도를 직접 올리는 기능이 아니라, 발굴 파이프라인을 굴리는 "팀 운영 방식"을 표준화·검증 가능하게 만드는 메타 인프라</strong>다. 핵심 가치는 (1) 6개 오케스트레이션 패턴으로 작업 위임을 명시적·사후 감사 가능하게 만들고, (2) VR-cycle 자가검증 루프로 시스템이 자기 결함을 정직하게 노출하며, (3) 환각 가드(Stage 5)로 도메인 한계를 숨기지 않고 disclaimer로 드러내는 데 있다.</p>
+<p>원본은 revfactory/harness (v1.2.0, Apache-2.0)이며, 본 프로젝트는 CLI 종속(L1)을 폐기하고 CLI-agnostic 핵심 IP(L2)만 추출했다 (<code>tools/harness-adaptation/ANALYSIS.md:283-292</code>).</p>
+<hr />
+<h2 id="1">1. 동작 원리</h2>
+<h3 id="11-6">1.1 6개 오케스트레이션 패턴</h3>
+<p>권위 있는 명칭 출처는 원본 <code>plugin.json:3</code> 영문 열거, 상세 정의는 <code>reference/harness/.../agent-design-patterns.md:83-161</code> (분석 정리: <code>tools/harness-adaptation/ANALYSIS.md:109-141</code>).</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>패턴</th>
+<th>적용 조건</th>
+<th>본 프로젝트 매핑</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><strong>Pipeline</strong></td>
+<td>순차 의존 작업, 각 단계가 직전 산출물에 강하게 의존</td>
+<td>시퀀스 검증 → 변이 적용 → 도킹 → 채점</td>
+<td><code>ANALYSIS.md:113-116</code> / <code>CLAUDE.md:42</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><strong>Fan-out/Fan-in</strong></td>
+<td>동일 입력에 여러 관점·영역 분석 후 통합. "반드시 팀으로 구성"</td>
+<td>4 reviewer 병렬 검토 → reviewer-science 통합</td>
+<td><code>ANALYSIS.md:118-122</code> / <code>CLAUDE.md:44,9</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><strong>Expert Pool</strong></td>
+<td>입력 유형에 따라 다른 전문가 호출. 서브에이전트가 더 적합</td>
+<td>codex=코드, cursor-agent=분석 라우팅</td>
+<td><code>ANALYSIS.md:123-126</code> / <code>CLAUDE.md:22</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td><strong>Producer-Reviewer</strong></td>
+<td>품질 보장 필요 + 객관적 검증 기준 존재. 재시도 ≤2~3</td>
+<td>engineer-backend 생성 ↔ reviewer 검증 루프</td>
+<td><code>ANALYSIS.md:128-131</code> / <code>CLAUDE.md:43</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td><strong>Supervisor</strong></td>
+<td>작업량 가변·런타임 동적 분배</td>
+<td>orchestrator가 팀원에 동적 분배</td>
+<td><code>ANALYSIS.md:133-136</code> / <code>CLAUDE.md:9</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><strong>Hierarchical Delegation</strong></td>
+<td>문제가 자연스럽게 계층적 분해. 깊이 3단계 이상 금지</td>
+<td>1단계 충분 시 4순위 "직접"으로 평탄화</td>
+<td><code>ANALYSIS.md:138-141</code> / <code>CLAUDE.md:57</code></td>
+</tr>
+</tbody>
+</table>
+<p>이 6패턴은 <code>CLAUDE.md</code>의 4단계 위임 트리에 1:1로 명시 매핑되어 있다 (Stage 3 작업). 즉 어느 위임 결정이 어느 패턴의 실구현인지 추적 가능하다 (<code>CLAUDE.md:9-10, 22-23, 41-46, 56-57</code>).</p>
+<h3 id="12-stage-09">1.2 Stage 0~9 — 무엇을 했나</h3>
+<p><code>CLAUDE.md</code>의 "Stage 적용 이력" 표(<code>CLAUDE.md:148-166</code>)와 회고(<code>_workspace/release/retro-2026-Q2.md:21-39</code>)가 출처다. 각 Stage는 독립적으로 가치를 내는 단위로 설계되었다 (<code>INTEGRATION_PLAN.md:4</code>).</p>
+<table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>한 일</th>
+<th>사유</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>tools/harness-adaptation/</code> 디렉토리 + 원본 submodule 신설</td>
+<td>어댑테이션 골격 + 원본 라이선스 보존</td>
+<td><code>INTEGRATION_PLAN.md:8-16</code></td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>_workspace/</code> 디렉토리 + <code>{NN}_{agent}_{artifact}.{ext}</code> 파일명 컨벤션</td>
+<td>다단계 산출물 추적성</td>
+<td><code>INTEGRATION_PLAN.md:19-33</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>CLAUDE.md</code> Harness Pointer 블록 + 트리거 키워드</td>
+<td>발견 가능성 향상</td>
+<td><code>INTEGRATION_PLAN.md:36-53</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>위임 트리 4분기에 6패턴 명칭 매핑</td>
+<td>사후 감사 가능성</td>
+<td><code>INTEGRATION_PLAN.md:57-73</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>PR 템플릿 + 검증 보고서 의무화 (should-trigger/NOT-trigger/A-B)</td>
+<td>신규 에이전트·스킬 품질 게이트</td>
+<td><code>INTEGRATION_PLAN.md:77-86</code></td>
+</tr>
+<tr>
+<td>5 (<strong>Critical</strong>)</td>
+<td><code>pipeline_local/scripts/pharmacology_guards.py</code> + 회귀 테스트(33→39개)</td>
+<td>약리학 lookup table 환각 차단</td>
+<td><code>INTEGRATION_PLAN.md:90-100</code> / <code>CLAUDE.md:152</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>CHANGELOG.md</code> + <code>RETROSPECTIVE_GUIDE.md</code> + PR 템플릿 보강</td>
+<td>Phase 7 진화 메커니즘 운영화</td>
+<td><code>INTEGRATION_PLAN.md:104-113</code> / <code>CLAUDE.md:155</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td><code>.claude/agents/*.md</code> 6개에 harness 표준 3섹션(입력/출력/에러) 보강</td>
+<td>검증 가능 형식 정립 (이미 분리되어 있어 신설 불필요)</td>
+<td><code>CLAUDE.md:156</code></td>
+</tr>
+<tr>
+<td>8a</td>
+<td><code>researcher</code> 에이전트 신설</td>
+<td>외부 자료 수집 부담을 reviewer-science에서 분리</td>
+<td><code>CLAUDE.md:158</code></td>
+</tr>
+<tr>
+<td>8b</td>
+<td>reviewer-science → pharma/biology/chemistry/math 4분리, 기존 reviewer-science는 라우터 재정의</td>
+<td>도메인 경계 명확화 + 약리학 가드 직결</td>
+<td><code>CLAUDE.md:159</code></td>
+</tr>
+<tr>
+<td>8c</td>
+<td><code>scripts/auto_dispatch.sh</code> + orchestrator 외부 CLI 자동 dispatch</td>
+<td>Codex/Cursor 자동 라우팅 (Expert Pool)</td>
+<td><code>CLAUDE.md:160</code></td>
+</tr>
+<tr>
+<td>8d</td>
+<td>End-to-End 사이클 dogfooding (modification_conflict checker, 71/71 tests)</td>
+<td>구현→검증→실험→갭→수정→완성 6단계 작동 입증</td>
+<td><code>CLAUDE.md:161</code></td>
+</tr>
+<tr>
+<td>8e/8f/8g</td>
+<td>VR-cycle-04/07/01 closure (라우팅 회귀 + 자기 일관성 pytest + C-07 DOTA, 89/89)</td>
+<td>§검증 8건 중 4건 자체 closure</td>
+<td><code>CLAUDE.md:162</code></td>
+</tr>
+<tr>
+<td>8h</td>
+<td>VR-cycle-09 (H-06 "계산 불가능을 계산 가능한 척") 식별·closure (93/93)</td>
+<td>3-layer closure, "도메인 한계의 정직한 노출" 본질 확립</td>
+<td><code>CLAUDE.md:163</code></td>
+</tr>
+<tr>
+<td>8i</td>
+<td>VR-cycle-05/06/08 + VR-S5-01 partial closure (95/95)</td>
+<td>GATE-F/GATE-G + disclaimer 추가. 10건 중 10건 처리 완료</td>
+<td><code>CLAUDE.md:164</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>Rosetta Flow End-to-End Dogfood (3 iter, 9.5분, patience early stop)</td>
+<td>BE/FE/PyRosetta/Boltz 실 운영 + 6 critical 결함 자가 노출 + R1~R7 + VR-cycle-10~14</td>
+<td><code>CLAUDE.md:166</code> / <code>scenario-rosetta-flow-2026-05-11.md</code></td>
+</tr>
+</tbody>
+</table>
+<p>추가로 분기 회고 1차(Retro 2026-Q2)가 Stage 9와 8i 사이에 실행되어 8개 Action Item을 식별했다 (<code>CLAUDE.md:165</code>).</p>
+<h3 id="13-vr-cycle">1.3 VR-cycle 자가검증 루프</h3>
+<p>VR-cycle(Verification Required cycle)은 <strong>어댑테이션이 스스로 발견한 미검증·결함 항목을 등록하고, 후속 Stage에서 닫는</strong> 메커니즘이다. 본질은 시스템이 자기 한계를 숨기지 않고 추적 대상으로 명시하는 것.</p>
+<ul>
+<li><strong>처리 현황</strong>: 10개 항목 100% 처리 — FULL closed 5건(50%), ABSORBED 1건(VR-02→09), PARTIAL 4건(40%) (<code>retro-2026-Q2.md:68-75</code>).</li>
+<li><strong>차단된 실 회귀 결함</strong>: <code>RW_TRANSFER[S]=1.15</code>(정답 3.40), <code>NEND_HALFLIFE[P]=20.0</code> yeast(정답 30.0 mammalian), Boman 부호 역전 — 모두 <code>pharmacology_guards</code>가 차단 (<code>retro-2026-Q2.md:79-86</code>).</li>
+<li><strong>자체 발견 1건</strong>: <code>boman_index_kcal_per_mol</code> 범위 <code>[-5,+5]</code>가 all-K=5.55에서 너무 좁음 → <code>[-5,+15]</code>로 자가 수정. GATE-C가 자체 가설의 부정확성을 catch (<code>retro-2026-Q2.md:86</code>).</li>
+<li><strong>운영 적용 사례 (Stage 9)</strong>: ddG=0.00이라는 비현실적 결과를 "임상 binding 값"이 아닌 "도메인 fail 신호"로 정직히 보고 — VR-cycle-09(H-06) 가드가 의도대로 작동 (<code>scenario-rosetta-flow-2026-05-11.md:223, 271</code>). Stage 9에서 신규 VR-cycle-10~14 등록 (<code>scenario-rosetta-flow-2026-05-11.md:208-213</code>).</li>
+</ul>
+<p>핵심 발견(<code>CLAUDE.md:163</code>): <strong>"하네스 본질 = 도메인 한계의 정직한 노출, 정확도 보장 X."</strong></p>
+<hr />
+<h2 id="2">2. 영향 — 시스템 품질·자가검증에 어떻게 기여하나</h2>
+<ol>
+<li><strong>위임의 사후 감사 가능성</strong>: 6패턴 ↔ 4순위 트리 매핑으로 "어느 작업을 왜 그 방식으로 위임했나"를 추적 가능. Stage 3 이전엔 패턴 명칭 기록이 없어 사후 감사 불가였음 (<code>ANALYSIS.md:221-225</code> 환각 위험 지점 §Phase 2).</li>
+<li><strong>환각 사고 예방 (Critical)</strong>: Stage 5 환각 가드가 약리학 lookup table 4건 이상의 실 회귀를 코드 레벨에서 차단 (<code>retro-2026-Q2.md:79-86</code>). 이는 NSGA-II 순위 역전(Boman 부호) 같은 발굴 결과 왜곡을 막는다.</li>
+<li><strong>메트릭으로 입증되는 품질 향상</strong>: pytest 0→95/95, auto_dispatch routing 0→16/16, 에이전트 정의 6→11(+83%), CLAUDE.md 트리거 행 8→18(+125%), Conflict rules 0→10, LITERATURE_VALUES 0→5 (<code>retro-2026-Q2.md:58-66</code>).</li>
+<li><strong>Producer-Reviewer cross-validation 신호</strong>: Stage 9에서 6개 발견 중 5건을 2명 이상 reviewer가 독립 식별 — 단일 시각 환각을 cross-check로 걸러냄 (<code>scenario-rosetta-flow-2026-05-11.md:137, 224</code>).</li>
+<li><strong>재현 가능한 인용 규약</strong>: <code>file_path:line</code> 인용을 강제하여 검증자가 주장을 재현 가능 (<code>ANALYSIS.md:5</code>, <code>post-m0-audit</code> 라인 번호 인용 패턴 차용 <code>ANALYSIS.md:212</code>).</li>
+</ol>
+<hr />
+<h2 id="3-action-item-stage">3. 관련 Action Item — Stage 이력 자체가 메타</h2>
+<p>Stage 적용 이력 표 자체가 메타 작업의 산물이다. 회고에서 <strong>"메타 작업의 패턴 부재"</strong>가 핵심 발견으로 기록되었다: 본 분기 작업의 절반 이상이 어댑테이션 자체의 단계적 구축(Stage 1~8 등)인데, 이들이 위임 트리 4순위 "직접 구현"으로 흡수되었을 뿐 고유 패턴 명세가 없다 (<code>retro-2026-Q2.md:101-107, 200</code>).</p>
+<p>Q3 Action Items 8건 중 메타 인프라와 직결되는 것 (<code>retro-2026-Q2.md:160-169</code>):</p>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>액션</th>
+<th>메타 관계</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q-2026-Q3-1 (<strong>Critical</strong>)</td>
+<td>CI에 pytest + routing test 등록</td>
+<td>회귀 자동 차단 — 운영 단계 진입 전제 (<code>retro-2026-Q2.md:162, 171</code>)</td>
+</tr>
+<tr>
+<td>Q-2026-Q3-2</td>
+<td>tmux team-mate 1회 실 운영 (Stage 9)</td>
+<td>1순위 위임 트리가 본 분기 0회 사용 — 패턴 정합성 검증 불완전 (<code>retro-2026-Q2.md:96, 199</code>)</td>
+</tr>
+<tr>
+<td>Q-2026-Q3-7</td>
+<td><strong>Meta-Pipeline 패턴 정의</strong> + 위임 트리 4순위 보강</td>
+<td>"메타 작업 패턴 부재" 직접 해소 (<code>retro-2026-Q2.md:153, 168</code>)</td>
+</tr>
+<tr>
+<td>Q-2026-Q3-3/4</td>
+<td>VR-cycle-05/06 full closure (echo·토큰 비용 실측)</td>
+<td>partial→full, 실 트래픽 필요 (<code>retro-2026-Q2.md:164-165</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Stage 9가 Q-2026-Q3-2를 사전 부분 실행하면서 다시 Q-2026-Q3-9~14를 추가 등록 (<code>scenario-rosetta-flow-2026-05-11.md:251-260</code>) — Action Item이 자기 증식하는 자가 발전 루프가 관찰된다.</p>
+<hr />
+<h2 id="4">4. 완성도</h2>
+<table>
+<thead>
+<tr>
+<th>구분</th>
+<th>상태</th>
+<th>근거</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Stage 0~9 (8a~8i 포함)</td>
+<td><strong>17/17 완료</strong></td>
+<td><code>retro-2026-Q2.md:144-145</code> "Stage 0/1/2/3/4/5/6/7 + 8a~8i 모두 적용" + Stage 9 추가 (<code>CLAUDE.md:166</code>)</td>
+</tr>
+<tr>
+<td>§검증 필요 처리</td>
+<td><strong>10/10 (100%)</strong> — 5 full + 1 흡수 + 4 partial</td>
+<td><code>retro-2026-Q2.md:68-75</code></td>
+</tr>
+<tr>
+<td>INTEGRATION_PLAN 미적용 Stage</td>
+<td><strong>없음</strong> (전부 적용 완료)</td>
+<td><code>CLAUDE.md:168-169</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>완성도 추정: 약 90%.</strong> Stage 골격·검증 게이트·환각 가드·진화 메커니즘은 전부 가동(17/17). 남은 10%는 <strong>실 트래픽 검증의 공백</strong>이다:
+- 1순위 tmux team-mate 본 분기 0회 운영 (<code>retro-2026-Q2.md:96, 199</code>)
+- VR-cycle-05/06이 실 트래픽 부재로 partial에 머묾 (<code>retro-2026-Q2.md:198</code>)
+- CI 등록 미완료 — 회귀 테스트가 로컬에서만 작동 (<code>retro-2026-Q2.md:201</code>)
+- Stage 9 dogfood에서 실제 reviewer-* Agent 호출 대신 메인 thread가 임시 수행 (<code>scenario-rosetta-flow-2026-05-11.md:229</code>)</p>
+<p>즉 <strong>인프라는 완성, 실 운영 데이터 누적은 진행 중</strong>.</p>
+<hr />
+<h2 id="5">5. 학술 가치</h2>
+<ul>
+<li><strong>재현성 IP의 CLI 비종속 추출</strong>: 원본의 L1(Claude Code 종속)을 폐기하고 L2(6패턴·Phase 워크플로우·<code>_workspace</code> 컨벤션·검증 게이트)만 추출해 Codex/Cursor로 포팅 가능 (<code>ANALYSIS.md:145-198, 287</code>). 특정 벤더 도구에 묶이지 않는 멀티-에이전트 운영 방법론.</li>
+<li><strong>"정직한 한계 노출" 방법론</strong>: 휴리스틱·degraded-mode 결과를 신뢰값처럼 보고하지 않는 가드(H-06/VR-cycle-09)는, 계산 과학 AI 파이프라인의 환각 보고 문제에 대한 일반화 가능한 패턴 (<code>CLAUDE.md:163</code>, <code>scenario-rosetta-flow-2026-05-11.md:271</code>).</li>
+<li><strong>자가검증 dogfooding 사례</strong>: Stage 8d·9 두 차례 End-to-End dogfood가 "시스템이 자기 결함을 노출"하는 메커니즘을 입증 (Stage 9: 6 critical 결함 자가 노출 <code>scenario-rosetta-flow-2026-05-11.md:266-273</code>).</li>
+<li><strong>분기 회고의 정량 메트릭 추이</strong>: SemVer 15 minor + 1 patch, 메트릭 before/after 표 (<code>retro-2026-Q2.md:43, 58-66</code>)가 메타 인프라 진화의 정량적 추적 사례.</li>
+<li><strong>한계 (정직성 자체의 적용)</strong>: 원본의 "+60% 품질 향상" 주장은 n=15 author-measured 소프트웨어 태스크로 약리학 정확도에 일반화 불가하다고 본 어댑테이션이 명시 (<code>ANALYSIS.md:241, 272</code>). 즉 어댑테이션 스스로 자기 효과를 과대 주장하지 않는다.</li>
+</ul>
+<hr />
+<h2 id="6">6. 사용법 (위임 인터페이스)</h2>
+<p><code>CLAUDE.md</code> 위임 트리(<code>CLAUDE.md:3-59</code>)와 트리거 키워드 표(<code>CLAUDE.md:74-90</code>)가 진입점.</p>
+<table>
+<thead>
+<tr>
+<th>위임 방식</th>
+<th>호출</th>
+<th>패턴</th>
+<th>트리거 키워드</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>tmux team-mate</strong> (<code>/team</code>)</td>
+<td>tmux 확인 → <code>./scripts/launch_agent_team.sh</code></td>
+<td>Fan-out/Fan-in 또는 Supervisor</td>
+<td>"팀", "토론", "리뷰", "검토회의" (<code>CLAUDE.md:15, 76</code>)</td>
+</tr>
+<tr>
+<td><strong>codex</strong></td>
+<td><code>./scripts/agent-wrapper.sh codex &lt;args&gt;</code></td>
+<td>Expert Pool (코드)</td>
+<td>"구현해/코드 작성/수정해"(단순), "리뷰해"(코드) (<code>CLAUDE.md:77-78</code>)</td>
+</tr>
+<tr>
+<td><strong>cursor-agent</strong></td>
+<td><code>./scripts/agent-wrapper.sh cursor-agent &lt;args&gt;</code>; 단계별 Pipeline은 <code>./scripts/cursor/harness_invoke.sh</code> (<code>list</code>/<code>run</code>/<code>chain</code>, 기본 dry-run)</td>
+<td>Expert Pool (분석)</td>
+<td>"EOD/일정/상태 보고", "분석해/조사해"(구조) (<code>CLAUDE.md:79-80, 37</code>)</td>
+</tr>
+<tr>
+<td><strong>내장 서브에이전트</strong> (Agent tool)</td>
+<td>Agent / <code>/subagent-dev</code></td>
+<td>Pipeline / Producer-Reviewer / Fan-out·Fan-in</td>
+<td>"구현해"(복잡, 여러 파일) (<code>CLAUDE.md:81</code>)</td>
+</tr>
+<tr>
+<td><strong>직접 구현</strong></td>
+<td>(위임 없음)</td>
+<td>Hierarchical 평탄화</td>
+<td>파일 1~2개로 끝나는 작업 (<code>CLAUDE.md:59</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>위임 시 필수 행동(<code>CLAUDE.md:63-68</code>): (1) 할당 시 대상·내용·예상 결과 CLI 출력, (2) 결과 수신 시 요약·변경 파일·테스트 결과 출력, (3) <code>logs/external_agents/</code>에 외부 호출 기록, (4) 실패 시 보고 + 대안. 도메인 리뷰어는 키워드로 자동 라우팅된다 (예: "약리학/Boman/GRAVY"→reviewer-pharma, "DOTA/라벨링"→reviewer-chemistry, <code>CLAUDE.md:87-90</code>).</p>
+<hr />
+<h2 id="7">7. 핵심 — 왜 필요한가 (발굴 정확도 메타 인프라)</h2>
+<p><strong>하네스 어댑테이션은 후보 펩타이드 발굴의 점수를 직접 1점도 올리지 않는다.</strong> Δmargin 계산식도, 도킹 채점 함수도, 선택성 마진도 건드리지 않는다. 그럼에도 필요한 이유는, 발굴 결과의 <strong>신뢰성·재현성·정직성을 떠받치는 메타 인프라</strong>이기 때문이다.</p>
+<ol>
+<li>
+<p><strong>도메인 한계의 정직한 노출</strong>: 어댑테이션의 본질은 "정확도 보장 X, 도메인 한계의 정직한 노출"로 명문화돼 있다 (<code>CLAUDE.md:163</code>). ddG=0.00 같은 degraded-mode 결과를 임상 결합 친화도인 척 보고하지 않고 fail 신호로 분류한 것이 대표 운영 사례 (<code>scenario-rosetta-flow-2026-05-11.md:223, 271</code>). 발굴이 틀릴 수 있음을 시스템이 스스로 드러낸다.</p>
+</li>
+<li>
+<p><strong>환각 차단</strong>: 약리학 lookup table 환각(Radzicka-Wolfenden S=1.15, Pro half-life=20 yeast, Boman 부호 역전)은 그 자체가 NSGA-II 순위와 후보 선정을 왜곡한다. Stage 5 가드가 이를 코드 레벨에서 차단해 <strong>잘못된 수치로 인한 잘못된 발굴</strong>을 예방 (<code>retro-2026-Q2.md:79-86</code>, <code>ANALYSIS.md:246-251</code> H-01~H-05).</p>
+</li>
+<li>
+<p><strong>재현성</strong>: <code>_workspace/</code> 산출물 컨벤션 + <code>file_path:line</code> 인용 강제 + SemVer CHANGELOG + 분기 회고로, 어떤 발굴 실행이 어떤 코드·에이전트·파라미터에서 나왔는지 추적 가능 (<code>retro-2026-Q2.md:46-54, 58-66</code>). 발굴 결과가 우연이 아니라 재현 가능한 절차의 산물임을 보장.</p>
+</li>
+<li>
+<p><strong>자가검증의 메타 루프</strong>: VR-cycle이 시스템 결함을 등록·closure하고, dogfooding이 결함을 자가 노출하며, 회고가 Action Item을 식별한다. 이 루프가 발굴 파이프라인 자체의 버그(Stage 9의 PyRosetta cache key 충돌, ddG silent fallback 0.0 — <code>scenario-rosetta-flow-2026-05-11.md:70-98</code>)를 잡아내, 정확도에 <strong>간접적으로</strong> 기여한다.</p>
+</li>
+</ol>
+<p>요약: 발굴 정확도를 올리는 것은 스코어링·도킹·선택성 엔진의 몫이고, 하네스 어댑테이션은 <strong>그 엔진이 거짓말하지 않고, 추적 가능하며, 자기 결함을 노출하도록 강제하는 운영 체계</strong>다. 정확도의 <em>상한</em>이 아니라 <em>신뢰의 하한</em>을 책임진다.</p>
+<hr />
+<h2 id="_1">검증 인용 목록</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>주장</th>
+<th>출처</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>6패턴 명칭·적용 조건</td>
+<td><code>tools/harness-adaptation/ANALYSIS.md:109-141</code> (원본 <code>agent-design-patterns.md:83-161</code>)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>6패턴 ↔ 위임 트리 매핑</td>
+<td><code>CLAUDE.md:9-10, 22-23, 41-46, 56-57</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>Stage 적용 이력 표</td>
+<td><code>CLAUDE.md:148-166</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Stage 0~7 통합 로드맵·사유</td>
+<td><code>tools/harness-adaptation/INTEGRATION_PLAN.md:8-126</code></td>
+</tr>
+<tr>
+<td>5</td>
+<td>Stage 5 Critical·환각 가드</td>
+<td><code>INTEGRATION_PLAN.md:90-100</code> / <code>CLAUDE.md:152</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>VR-cycle 처리 현황 10/10</td>
+<td><code>_workspace/release/retro-2026-Q2.md:68-75</code></td>
+</tr>
+<tr>
+<td>7</td>
+<td>차단된 실 회귀 결함 4건 + 자체 발견 1건</td>
+<td><code>retro-2026-Q2.md:79-86</code></td>
+</tr>
+<tr>
+<td>8</td>
+<td>메트릭 before/after 추이</td>
+<td><code>retro-2026-Q2.md:58-66</code></td>
+</tr>
+<tr>
+<td>9</td>
+<td>"메타 작업 패턴 부재" 발견</td>
+<td><code>retro-2026-Q2.md:101-107, 200</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td>Q3 Action Items 8건</td>
+<td><code>retro-2026-Q2.md:160-169</code></td>
+</tr>
+<tr>
+<td>11</td>
+<td>Stage 0~8 모두 적용 완료</td>
+<td><code>retro-2026-Q2.md:144-145</code></td>
+</tr>
+<tr>
+<td>12</td>
+<td>Stage 9 dogfood — 6 critical 결함 자가 노출 + R1~R7</td>
+<td><code>_workspace/release/scenario-rosetta-flow-2026-05-11.md:53-201, 266-273</code></td>
+</tr>
+<tr>
+<td>13</td>
+<td>ddG=0.00 정직한 보고 (H-06 운영 사례)</td>
+<td><code>scenario-rosetta-flow-2026-05-11.md:223, 271</code></td>
+</tr>
+<tr>
+<td>14</td>
+<td>"본질 = 도메인 한계의 정직한 노출, 정확도 보장 X"</td>
+<td><code>CLAUDE.md:163</code></td>
+</tr>
+<tr>
+<td>15</td>
+<td>L1/L2/L3 레이어 분리·CLI 추상화</td>
+<td><code>ANALYSIS.md:145-198, 283-292</code></td>
+</tr>
+<tr>
+<td>16</td>
+<td>"+60% 일반화 불가" 자기 한계 명시</td>
+<td><code>ANALYSIS.md:241, 272</code></td>
+</tr>
+<tr>
+<td>17</td>
+<td>위임 방식·트리거 키워드·필수 행동</td>
+<td><code>CLAUDE.md:3-90</code></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>§검증 필요 (본 보고서)</strong>: (a) 완성도 90%는 회고의 정성 평가(<code>retro-2026-Q2.md:196-201</code>)에 근거한 추정치 — 정량 산식 없음. (b) <code>agent-design-patterns.md</code> 원본 라인 번호는 <code>ANALYSIS.md</code> 인용을 신뢰한 것으로, submodule <code>reference/harness/</code> 실파일은 본 분석 시점 디렉토리에서 미확인(<code>ls</code> 결과 비어 있음 — <code>git submodule update --init</code> 필요). (c) CI 등록·tmux 실 운영은 Q3 미완료 항목으로, 본 보고서 작성 시점(2026-06-17) 추가 진척은 미확인.</p>
+</blockquote></div></main></div>
+<footer>SSTR2 선택성 방사성의약품 발굴 Agentic AI 시스템 · 기술 보고서 · 모든 기능 주장은 코드 file:line 인용으로 검증 · 생성 2026-06-17</footer>
+</body></html>
