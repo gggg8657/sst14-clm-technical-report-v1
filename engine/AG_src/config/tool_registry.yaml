@@ -1,0 +1,137 @@
+# =============================================================================
+# Tool Registry - 도구 레지스트리
+# 파이프라인에서 사용하는 모든 도구의 분류 및 설정
+# 분류: API (NVIDIA NIM REST), MCP (로컬 서버), Library (Python 직접 임포트)
+# =============================================================================
+
+tools:
+
+  # ---------------------------------------------------------------------------
+  # API: NVIDIA NIM REST API (클라우드 추론, 로컬 GPU 불필요)
+  # ---------------------------------------------------------------------------
+  api:
+
+    openfold3:
+      endpoint: "health.api.nvidia.com/v1/biology/openfold/openfold3"
+      purpose: "Complex structure prediction (replaces AlphaFold3 Server)"
+      # 목적: 복합체 구조 예측 (AlphaFold3 서버 대체)
+      timeout_sec: 600
+      step: "Step01"
+      input_format: "json"   # sequences + templates
+      output_format: "pdb"
+
+    rfdiffusion:
+      endpoint: "health.api.nvidia.com/v1/biology/ipd/rfdiffusion/generate"
+      purpose: "De novo binder backbone design"
+      # 목적: 신규 바인더 백본 구조 설계
+      timeout_sec: 300
+      step: "Step02"
+      input_format: "json"   # contigs, hotspot_res, pdb (receptor)
+      output_format: "pdb"
+
+    proteinmpnn:
+      endpoint: "health.api.nvidia.com/v1/biology/ipd/proteinmpnn/predict"
+      purpose: "Inverse folding - backbone to sequence"
+      # 목적: 역폴딩 - 백본 구조로부터 아미노산 시퀀스 생성
+      timeout_sec: 120
+      step: "Step03"
+      input_format: "pdb"
+      output_format: "fasta"
+
+    esmfold:
+      endpoint: "health.api.nvidia.com/v1/biology/nvidia/esmfold"
+      purpose: "Fast structure prediction for QC"
+      # 목적: 빠른 구조 예측 (품질 관리 QC용)
+      timeout_sec: 120
+      step: "Step04"
+      input_format: "fasta"
+      output_format: "pdb"
+
+    diffdock:
+      endpoint: "health.api.nvidia.com/v1/biology/mit/diffdock"
+      purpose: "Molecular docking"
+      # 목적: 분자 도킹 (펩타이드-수용체 결합 포즈 예측)
+      timeout_sec: 300
+      step: "Step05"
+      input_format: "json"   # receptor_pdb, ligand_pdb/smiles
+      output_format: "sdf"
+
+    boltz2:
+      endpoint: "health.api.nvidia.com/v1/biology/mit/boltz2/predict"
+      purpose: "Complex structure + binding affinity"
+      # 목적: 복합체 구조 예측 + 결합 친화도 계산
+      timeout_sec: 600
+      step: "Step05"
+      input_format: "json"
+      output_format: "json"  # structure + affinity score
+
+    molmim:
+      endpoint: "health.api.nvidia.com/v1/biology/nvidia/molmim/generate"
+      purpose: "Small molecule generation"
+      # 목적: 소분자 생성 (보조 도구)
+      timeout_sec: 120
+      step: "auxiliary"
+      input_format: "smiles"
+      output_format: "smiles"
+
+    esm2:
+      endpoint: "health.api.nvidia.com/v1/biology/meta/esm2-650m"
+      purpose: "Protein embeddings for mutation analysis"
+      # 목적: 단백질 임베딩 생성 (돌연변이 분석용)
+      timeout_sec: 120
+      step: "auxiliary"
+      input_format: "fasta"
+      output_format: "json"  # embedding vectors
+
+  # ---------------------------------------------------------------------------
+  # MCP: 로컬 MCP 서버 (Local MCP Servers)
+  # ---------------------------------------------------------------------------
+  mcp:
+
+    pyrosetta:
+      type: "python_process"
+      purpose: "FlexPepDock refinement, FastDesign, ddG calculation"
+      # 목적: FlexPepDock 정제, FastDesign, ddG 계산
+      requires: "conda env bio-tools, PyRosetta license"
+      step: "Step06"
+      conda_env: "bio-tools"
+      scripts:
+        - "flexpep_dock.py"
+        - "fast_design.py"
+        - "ddg_calc.py"
+
+    foldmason:
+      type: "cli_wrapper"
+      binary: "foldmason"
+      purpose: "Structure-based MSA, lDDT scoring"
+      # 목적: 구조 기반 다중 정렬, lDDT 점수 계산
+      requires: "conda env bio-tools"
+      step: "Step07"
+      conda_env: "bio-tools"
+
+    pymol:
+      type: "cli_wrapper"
+      binary: "pymol"
+      purpose: "Molecular visualization, publication-quality renders"
+      # 목적: 분자 시각화, 출판용 고품질 렌더링
+      requires: "conda env bio-tools"
+      step: "Step07"
+      conda_env: "bio-tools"
+      headless: true   # pymol -c (command-line, no GUI)
+
+  # ---------------------------------------------------------------------------
+  # Library: 직접 Python 임포트 (Direct Python imports)
+  # ---------------------------------------------------------------------------
+  library:
+
+    biopython:
+      package: "Bio"
+      purpose: "PDB parsing, structure file manipulation"
+      # 목적: PDB 파일 파싱 및 구조 파일 조작
+      install: "pip install biopython"
+
+    rdkit:
+      package: "rdkit"
+      purpose: "Cheminformatics, SMILES processing"
+      # 목적: 화학정보학, SMILES 처리
+      install: "conda install -c conda-forge rdkit"

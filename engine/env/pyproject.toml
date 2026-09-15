@@ -1,0 +1,17 @@
+[tool.pytest.ini_options]
+# 2026-06-09: testpaths 를 실제 테스트 위치로 갱신 (이전 "pipelines" 는 _backup 으로 격리됨).
+# SSOT = ai4sci-kaeri(AG_src/pyrosetta_flow/backend) + pipeline_local 컴퓨트 레이어.
+# pythonpath 순서 주의: nested 루트를 먼저 두어 동명 패키지(pyrosetta_flow/scripts)에서
+# nested 가 우선되고, "."(최상위)로 pipeline_local 이 해결되게 한다.
+testpaths = [
+    "AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri/pyrosetta_flow/tests",
+    "AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri/AG_src/tests",
+    "pipeline_local/tests",
+]
+pythonpath = ["AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri", "."]
+markers = [
+    "slow: 실제 외부 도구(Boltz subprocess 등)를 실행하는 느린 통합 테스트 (deselect with '-m not slow')",
+    "smoke: 실 통합 경계(vLLM/PyRosetta/backend/상태파일) 검증 스모크 테스트. 서비스/환경 부재 시 skip. 'pytest -m smoke'",
+    "network: 네트워크 의존 테스트",
+    "integration: 외부 도구 또는 end-to-end 경계를 검증하는 통합 테스트",
+]

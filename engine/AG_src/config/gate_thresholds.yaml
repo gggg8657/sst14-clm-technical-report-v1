@@ -1,0 +1,86 @@
+# =============================================================================
+# QC Gate Thresholds - 품질 관리 게이트 임계값
+# 각 단계별 통과/탈락 기준 정의
+# =============================================================================
+
+# --- Gates Enabled (게이트 활성화 토글) ---
+# 각 게이트를 개별적으로 켜거나 끌 수 있음 (true=적용, false=스킵)
+gates_enabled:
+  plddt: true              # ESMFold pLDDT 게이트
+  docking: true            # 도킹 점수 상위 % 게이트
+  rosetta: true            # Rosetta ddG/clash 게이트
+  selectivity: true        # 선택성(off-target) 게이트
+  disulfide: true          # 이황화 결합 거리 게이트
+  stability_prescreen: true  # Approach B 안정성 사전 스크리닝 게이트
+
+# --- Step 04: ESMFold 구조 예측 QC 게이트 ---
+esmfold_plddt_min: 50          # 평균 pLDDT 최솟값 (14-aa 단펩타이드: ESMFold 단독 예측 시 45-65 범위)
+esmfold_interface_plddt_min: 45  # 계면(interface) 잔기 평균 pLDDT 최솟값 (단펩타이드 보정)
+
+# --- Step 05: 도킹 게이트 ---
+docking_top_pct: 20            # 상위 20% 후보만 Rosetta 단계로 진행
+diffdock_confidence_max: -1.0  # DiffDock 신뢰도 점수 (더 음수 = 더 좋음)
+boltz2_affinity_threshold: -8.0  # Boltz2 결합 친화도 임계값 (kcal/mol)
+
+# --- Step 06: Rosetta 정제 QC 게이트 ---
+rosetta_ddg_max: -5.0          # ddG 최대값 (더 음수 = 더 강한 결합; kcal/mol)
+rosetta_clash_max: 10          # 클래시(충돌) 위반 허용 횟수 (MutateResidue+FlexPepDock 방식: fa_rep>10 잔기 수, Relax 미사용 시 6-10 정상)
+rosetta_constraint_violations_max: 0  # 구조 제약 위반 허용 횟수
+
+# --- Step 07: 구조 분석 게이트 ---
+foldmason_lddt_min: 0.6        # FoldMason 구조 정렬 lDDT 최솟값 (0~1)
+
+# --- Step 05b: 선택성 게이트 (Selectivity Gate) ---
+# PyRosetta ddG 기반 selectivity (kcal/mol 단위)
+# SSTR2 ddG: -20 ~ -36 범위, off-target ddG: -5 ~ -15 예상
+# G-2 fix (2026-05-20): 부호 컨벤션을 양수=좋음(positive=good)으로 통일 (SSOT)
+# margin >= 10.0 = SSTR2가 off-target보다 최소 10 kcal/mol 더 강한 결합 → 우수한 선택성
+selectivity_margin_min: 10.0       # Selectivity margin 최솟값 (양수 = SSTR2에 더 특이적)
+                                    # margin = ddG(off-target) - ddG(SSTR2)  [양수=good]
+offtarget_max_allowed: -15.0       # Off-target 최고 결합 ddG 상한 (이보다 좋으면 탈락, kcal/mol)
+
+# --- Disulfide Bond QC Gate (이황화 결합 거리 게이트) ---
+# 시스테인 SG-SG 원자 간 거리가 공유결합 길이를 초과하면 탈락
+# 끊어진 펩타이드는 리간드로 사용 불가 (약 전달용 펩타이드 부적합)
+disulfide_bond_max_distance: 2.5   # SG-SG 최대 허용 거리 (Angstroms, 공유결합 ~2.05A)
+disulfide_cys_positions: [3, 14]   # 검사할 시스테인 위치 쌍 (1-indexed, 원본 DOTATATE Cys3-Cys14)
+
+# --- Approach B: Stability Pre-screening Gate ---
+# Approach B에서 ESMFold/도킹 전 빠른 반감기 사전 스크리닝
+stability_prescreen_min_hours: 50.0       # 사전 스크리닝 최소 반감기 (시간)
+stability_prescreen_target_hours: 144.0   # 최종 목표 반감기 (시간)
+
+# --- Final Score Weights (최종 점수 가중치) ---
+# 최종 점수 = sum(weight_i * normalized_score_i)
+final_score_weights:
+  plddt:
+    weight: 0.15
+    description: "ESMFold 평균 pLDDT (구조 신뢰도)"
+    direction: "higher_is_better"
+  dock_score:
+    weight: 0.25
+    description: "도킹 점수 (DiffDock confidence 또는 Boltz2 affinity)"
+    direction: "lower_is_better"
+  ddg:
+    weight: 0.25
+    description: "Rosetta ΔΔG (결합 자유 에너지 변화)"
+    direction: "lower_is_better"
+  lddt:
+    weight: 0.15
+    description: "FoldMason lDDT (구조 보존성)"
+    direction: "higher_is_better"
+  selectivity:
+    weight: 0.20
+    description: "선택성 마진 (SSTR2 vs off-targets)"
+    direction: "higher_is_better"  # 더 양수 = SSTR2에 더 특이적 (G-2 fix: 양수=좋음 컨벤션)
+
+# --- Ranking Mode (랭킹 모드) ---
+# "ddg_primary": deltaG 기준 상위 K개 우선 선정 (기본값)
+# "weighted": 기존 가중합 점수 기반 랭킹
+ranking_mode: "ddg_primary"
+top_k_by_ddg: 5            # deltaG 기준 상위 선정 후보 수
+
+# --- Gate Logic ---
+# 게이트 통과 로직: AND 조건 (모든 게이트 통과해야 최종 합격)
+gate_logic: "AND"
+fail_fast: false   # false = 모든 게이트 평가 후 실패 이유 전체 기록

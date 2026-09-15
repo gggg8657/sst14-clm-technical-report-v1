@@ -1,0 +1,254 @@
+# =============================================================================
+# SSTR2 Peptide Binder Design Pipeline Configuration
+# =============================================================================
+
+# --- Run Identification ---
+run_id_format: "YYYYMMDD_HHMM_iterXX"
+run_id_example: "20260217_1430_iter01"
+
+# --- Iteration Parameters ---
+iteration:
+  n_backbone: 10
+  k_seq_per_backbone: 8
+  top_m_rosetta: 10
+  max_iterations: 10
+  adaptive_enabled: true
+  convergence_min_candidates: 3
+  convergence_ddg_threshold: -30.0
+  no_improvement_patience: 2
+  min_iterations: 2
+  mutation_rate_increase: 0.5
+
+# --- Receptor Configuration (SSTR2) ---
+receptor:
+  name: "SSTR2"
+  full_name: "Somatostatin Receptor Type 2"
+  chain: "B"
+  pocket_residues:
+    - 119   # TM2 helix
+    - 120
+    - 122   # hotspot
+    - 123
+    - 124
+    - 127   # hotspot
+    - 180
+    - 181
+    - 184   # hotspot
+    - 185
+    - 193
+    - 197   # hotspot
+    - 200
+    - 201
+    - 205   # hotspot
+    - 268
+    - 269
+    - 272   # hotspot
+    - 290
+    - 294   # hotspot
+    - 295
+    - 298
+
+# --- Reference Peptide (DOTATATE) ---
+reference_peptide:
+  name: "DOTATATE"
+  full_name: "DOTA-[Tyr3]-octreotate"
+  sequence: "AGCKNFFWKTFTSC"
+  length: 14
+  cys_positions: [3, 14]
+  frozen_residues: ["C3", "C14", "F7", "W8", "K9", "T10"]
+  notes: "Cyclic somatostatin analogue targeting SSTR2. Cys3-Cys14 disulfide essential for bioactivity. Positions 7-10 (FWKT) are binding hotspot core."
+
+# --- Sequence Constraints ---
+sequence_constraints:
+  enabled: true
+  fixed_positions:
+    3: "C"    # Cys3 - disulfide bond
+    14: "C"   # Cys14 - disulfide bond
+    7: "F"    # Phe7 - binding hotspot
+    8: "W"    # Trp8 - binding hotspot
+    9: "K"    # Lys9 - binding hotspot
+    10: "T"   # Thr10 - binding hotspot
+  disulfide_pairs:
+    - [3, 14]
+  notes: "Positions 3,14=C for disulfide stability. Positions 7-10=FWKT for binding hotspot."
+
+# --- RFdiffusion Contigs ---
+contigs: "B1-369/0 10-30"
+
+# --- Hotspot Residues ---
+hotspot_res:
+  - "B122"
+  - "B127"
+  - "B184"
+  - "B197"
+  - "B205"
+  - "B272"
+  - "B294"
+
+# --- Off-Target Receptors (selectivity screening) ---
+off_target_receptors:
+  - name: "SSTR1"
+    full_name: "Somatostatin Receptor Type 1"
+    pdb_source: "local"
+    local_path: "data/somatostatin_receptor/SSTR1_9IK8.cif"
+    uniprot_id: "P30872"
+    chain: "A"
+    notes: "Experimental structure 9IK8. Most similar pocket to SSTR2"
+  - name: "SSTR3"
+    full_name: "Somatostatin Receptor Type 3"
+    pdb_source: "local"
+    local_path: "data/somatostatin_receptor/SSTR3_8XIR.cif"
+    uniprot_id: "P32745"
+    chain: "A"
+    notes: "TM6/TM7 region differs from SSTR2"
+  - name: "SSTR4"
+    full_name: "Somatostatin Receptor Type 4"
+    pdb_source: "local"
+    local_path: "data/somatostatin_receptor/SSTR4_7XMT.cif"
+    uniprot_id: "P31391"
+    chain: "A"
+    notes: "Experimental structure 7XMT. Lowest sequence similarity"
+  - name: "SSTR5"
+    full_name: "Somatostatin Receptor Type 5"
+    pdb_source: "local"
+    local_path: "data/somatostatin_receptor/SSTR5_8ZBJ.cif"
+    uniprot_id: "P35346"
+    chain: "A"
+    notes: "Experimental structure 8ZBJ. Cross-reactivity with GLP-1 pathway"
+
+# --- Selectivity Screening Parameters ---
+selectivity:
+  enabled: true
+  engine: "pyrosetta"
+  top_k_for_selectivity: 20
+  parallel_offtargets: false
+  offtarget_timeout_sec: 300
+
+# --- Output Directories ---
+output_base_dir: "runs/"
+
+folder_structure:
+  "00_config":
+    description: "Pipeline config and threshold files"
+    contents:
+      - "pipeline_config.yaml"
+      - "gate_thresholds.yaml"
+      - "tool_registry.yaml"
+  "01_receptor":
+    description: "Receptor PDB and pocket residue JSON"
+    contents:
+      - "{receptor_name}_clean.pdb"
+      - "pocket_residues.json"
+  "02_backbones":
+    description: "RFdiffusion backbone PDB files"
+    contents:
+      - "backbone_{i:02d}.pdb"
+  "03_sequences":
+    description: "ProteinMPNN designed FASTA files"
+    contents:
+      - "backbone_{i:02d}_seq_{j:02d}.fasta"
+  "04_esmfold_qc":
+    description: "ESMFold structure prediction and QC report"
+    contents:
+      - "{seq_id}_esmfold.pdb"
+      - "qc_summary.json"
+  "05_docking":
+    description: "DiffDock/Boltz2 docking results"
+    contents:
+      - "{seq_id}_pose_{rank}.pdb"
+      - "docking_scores.json"
+  "05b_selectivity":
+    description: "Off-target docking and selectivity screening results"
+    contents:
+      - "{seq_id}_offtarget_{receptor_name}.json"
+      - "selectivity_scores.json"
+      - "selectivity_summary.json"
+  "06_rosetta":
+    description: "PyRosetta FlexPepDock refinement and ddG scores"
+    contents:
+      - "{seq_id}_refined.pdb"
+      - "rosetta_scores.json"
+  "07_analysis":
+    description: "FoldMason comparison, PyMOL renders, rank table"
+    contents:
+      - "rank_table.csv"
+      - "foldmason_lddt.json"
+      - "renders/"
+      - "summary.md"
+  "08_reports":
+    description: "Lab notebook, decision log, next iteration plan"
+    contents:
+      - "lab_notebook_iter{iteration:02d}.md"
+      - "decision_log_iter{iteration:02d}.md"
+      - "next_iteration_plan.yaml"
+
+# --- Approach B: BLOSUM62 Text-Level Mutation ---
+approach_b:
+  enabled: true
+  seed_sequence: "AGCKNFFWKTFTSC"
+  fixed_positions:
+    3: "C"
+    7: "F"
+    8: "W"
+    9: "K"
+    10: "T"
+    14: "C"
+  mutable_positions: [1, 2, 4, 5, 6, 11, 12, 13]
+  min_blosum_score: 0
+  max_mutations_per_variant: 3
+  max_variants: 200
+  strategy: "random"
+  hydrophobicity_max_delta: 2.0
+  stability_prescreen: true
+  stability_prescreen_min_hours: 0.6
+
+# --- Rosetta Configuration ---
+rosetta:
+  enabled: true
+  conda_env: "bio-tools"
+  protocol: "flexpep_refine"
+  timeout_per_candidate_sec: 1800
+  total_timeout_sec: 7200
+  fallback_to_simulation: true
+  top_m_rosetta: 5
+  fast_relax_before_dock: false
+  fast_design_enabled: false
+  fast_design_n_candidates: 20
+  fast_design_seed_base: 1000
+
+# --- LLM Configuration ---
+llm:
+  # 2026-05-20 SOD: ollama qwen3:8b → vLLM qwen3.5-35b-a3b (MoE Active 3B) 업그레이드
+  # - ollama 인스턴스가 GPU 0/1 좀비 점유로 응답 멈춤 (179GB 좀비, 별도 sprint에서 정리)
+  # - vLLM port 8000에 qwen3.5-35b-a3b 가동 중 — 즉시 사용 가능
+  # - Qwen3 thinking 모델: enable_thinking=false 강제 (reasoning 분리 + content 빈값 방지)
+  provider: "vllm"
+  model: "qwen3-32b"   # 2026-06-09: vLLM(GPU2)에 Qwen3-32B 서빙 — ~40 tok/s, JSON+no-think 검증됨
+  base_url: "http://localhost:8000"
+  api_key: null
+  timeout: 120
+  temperature: 0.3
+  max_tokens: 4096
+  enable_thinking: false  # Qwen3 thinking 비활성화 — content만 받기
+  # LLM-backed agents: planner, critic, reporter
+  # Code-based agents: qc_ranker, diversity_manager, builder (no LLM needed)
+
+  # 폴백 옵션 (ollama 좀비 정리 후 사용 가능):
+  # provider: "ollama"
+  # model: "qwen3:32b"           # 또는 qwen3:30b-a3b (MoE), deepseek-r1:70b (CoT)
+  # base_url: "http://localhost:11434"   # 11435 아님 — 실 ollama 표준 포트
+
+  # ── M3 (2026-05-20): agent별 다른 LLM (상위 llm 값 상속, 키만 override) ──
+  # agents:
+  #   planner:
+  #     provider: "ollama"
+  #     model: "deepseek-r1:70b"     # CoT reasoning 강점
+  #     base_url: "http://localhost:11434"
+  #   critic:
+  #     provider: "vllm"
+  #     model: "qwen3.5-35b-a3b"     # 빠른 MoE Active 3B
+  #     base_url: "http://localhost:8000"
+  #   reporter:
+  #     provider: "vllm"
+  #     model: "qwen3.5-35b-a3b"     # 65K context (long-form 문서)
+  #     base_url: "http://localhost:8000"

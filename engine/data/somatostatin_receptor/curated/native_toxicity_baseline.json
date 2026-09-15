@@ -1,0 +1,8 @@
+{
+  "sequence": "AGCKNFFWKTFTSC",
+  "hc50": -55.6816,
+  "is_toxic": true,
+  "binary_toxicity": 1.0,
+  "toxicity_type": "hemostasis",
+  "note": "pepADMET binary(is_toxic)는 비변별적(oxytocin/native 모두 toxic). hc50 연속값을 home-advantage 기준선으로 사용. 측정 2026-06-10, pepadmet conda env. 대조: oxytocin hc50=-14.5(안전), melittin=-292.7(독성)."
+}

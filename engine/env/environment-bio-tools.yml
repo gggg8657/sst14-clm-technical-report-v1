@@ -1,0 +1,34 @@
+# Conda environment: PyRosetta + FoldMason + PyMOL + Biopython + Meeko
+# Target: Ubuntu 22.04 / WSL2
+# Create: conda env create -f environment-bio-tools.yml
+# Activate: conda activate bio-tools
+
+name: bio-tools
+channels:
+  - https://conda.rosettacommons.org   # PyRosetta
+  - conda-forge
+  - bioconda                            # FoldMason
+  - defaults
+dependencies:
+  - python>=3.10,<3.13
+  - pip
+  # Core scientific stack
+  - numpy
+  - scipy
+  # Structural biology
+  - biopython
+  - rdkit                               # required by meeko
+  - gemmi                               # required by meeko (polymer/receptor)
+  # Analysis tools
+  - pyrosetta                           # Rosetta molecular modeling
+  - pymol-open-source                   # Molecular visualization
+  - foldmason                           # Multiple structure alignment
+  - tqdm                                # Progress bars
+  - ipywidgets                          # Jupyter widget support for tqdm
+  - psutil                              # CPU / memory monitoring
+  - aiofiles                            # Async file tail for SSE log streaming
+  - pip:
+    - meeko                             # AutoDock-GPU receptor/ligand prep
+    - py3Dmol                           # Interactive 3D molecular viewer in Jupyter
+    - pynvml                            # GPU monitoring (graceful fallback if no GPU)
+    - peptides==0.5.0                   # Boman, aliphatic, hydrophobicity, instability index (2026-05-12)
