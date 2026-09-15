@@ -7,11 +7,23 @@
 import json, re, glob, os
 import markdown
 
-ROOT = "[LOCAL_PATH]"
-SITE = f"{ROOT}/_workspace/report_site"
+
+# --- portable path patch (재현 패키지) ---
+import os as _os
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+if _os.path.basename(_HERE) == "master":  # v1: SOURCES/master → root
+    _PKG_ROOT = _os.path.abspath(_os.path.join(_HERE, "..", ".."))
+else:                                       # v2: root
+    _PKG_ROOT = _HERE
+ROOT = _PKG_ROOT
+SITE = _HERE
+REPO = _os.path.join(_PKG_ROOT, "engine")
+# --- end patch ---
+# ROOT = "[LOCAL_PATH]"  # patched below
+# SITE = f"{ROOT}/_workspace/report_site"  # patched below
 ANALYSIS = f"{SITE}/_analysis"
 PAGES = f"{SITE}/pages"
-REPO = f"{ROOT}/AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri"
+# REPO = f"{ROOT}/AgenticAI4SCIENCE_pyrosetta_track/repos/ai4sci-kaeri"  # patched below
 os.makedirs(PAGES, exist_ok=True)
 
 # 페이지 메타: slug -> (제목, 네비그룹, 이모지)
